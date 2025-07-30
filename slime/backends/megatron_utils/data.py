@@ -15,6 +15,8 @@ from slime.utils.flops_utils import calculate_fwd_flops
 from slime.utils.memory_utils import clear_memory
 from slime.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from slime.utils.timer import Timer
+from .cp_utils import get_sum_of_sample_mean
+
 
 LOCAL_STORAGE = {}
 LOCAL_METADATA = {}
@@ -267,18 +269,18 @@ def process_rollout_data(rollout_id, args, data_buffer):
     else:
         raw_rewards = rewards
     set_local_storage("raw_reward", raw_rewards)
-        
+
     if args.advantage_estimator in ["grpo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
         # group norm
         rewards = torch.tensor([r for r in rewards], dtype=torch.float)
         rewards = rewards.reshape(-1, args.n_samples_per_prompt)
         mean = rewards.mean(dim=-1, keepdim=True)
         rewards = rewards - mean
-        
+
         if args.advantage_estimator == "grpo" and args.grpo_std_normalization:
             std = rewards.std(dim=-1, keepdim=True)
             rewards = rewards / (std + 1e-6)
-        
+
         rewards = rewards.flatten().tolist()
         data["rewards"] = rewards
 
@@ -348,65 +350,24 @@ def log_rollout_data(rollout_id, args):
         log_dict = {}
         response_lengths = get_local_storage("response_lengths")
         loss_masks = get_local_storage("loss_masks")
+        total_lengths = get_local_storage("total_lengths")
 
         for key, val in get_local_storage().items():
-            if key == "tokens" or key == "loss_masks":
+            if key == "tokens" or key == "loss_masks" or key == "sample_indices":
                 continue
             # Upload per sample mean for each rollout value
             # There are the following assumptions:
             # - Each dp rank has the same number of samples
             if isinstance(val, list):
                 if isinstance(val[0], torch.Tensor):
-                    # Special handling for log_probs and ref_log_probs to apply loss_mask
+                    # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
+                    # modified in place and will cause problem for the next rollout.
+                    val = torch.cat(val).clone().detach()
                     if key in ["log_probs", "ref_log_probs", "returns", "advantages"] and loss_masks is not None:
-                        if cp_size == 1:
-                            # Apply loss_mask to get only valid tokens
-                            val = sum(
-                                [
-                                    (v * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-                                    for v, loss_mask in zip(val, loss_masks)
-                                ]
-                            ) / len(val)
-                        else:
-                            # For cp_size > 1, we need to handle loss_mask differently
-                            # The logic should be consistent with get_sum_of_sample_mean
-                            total_lengths = get_local_storage("total_lengths")
-                            cp_chunk_lengths = []
-                            chunked_loss_masks = []
-
-                            for i, (total_length, response_length, loss_mask) in enumerate(
-                                zip(total_lengths, response_lengths, loss_masks)
-                            ):
-                                prompt_length = total_length - response_length
-                                from .cp_utils import get_logits_and_tokens_offset_with_cp
-
-                                _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                                    total_length, response_length
-                                )
-                                loss_mask_0 = loss_mask[
-                                    tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length
-                                ]
-                                loss_mask_1 = loss_mask[
-                                    tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length
-                                ]
-                                chunked_loss_masks.append(torch.cat([loss_mask_0, loss_mask_1], dim=0))
-                                cp_chunk_lengths.append(chunked_loss_masks[i].size(0))
-
-                            val = sum(
-                                [
-                                    cp_size * (v * chunked_loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-                                    for v, chunked_loss_mask, loss_mask in zip(val, chunked_loss_masks, loss_masks)
-                                ]
-                            ) / len(val)
+                        sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
+                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
                     else:
-                        # Original logic for other tensor values
-                        if cp_size == 1:
-                            val = sum([v.mean() for v in val]) / len(val)
-                        else:
-                            # When cp_size > 1, the denominator should be the length of the response lengths. Also, to make
-                            # sure these values can be divided by `mpu.get_data_parallel_world_size(with_context_parallel=True)`
-                            # multiply by the cp_size.
-                            val = sum([cp_size * v.sum() / l for v, l in zip(val, response_lengths)]) / len(val)
+                        val = val.mean() * cp_size
                 else:
                     val = sum(val) / len(val)
             elif isinstance(val, torch.Tensor):
