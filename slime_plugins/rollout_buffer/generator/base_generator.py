@@ -9,15 +9,30 @@ from time import sleep
 from typing import List, Optional
 
 import requests
-from generator.reward_utils.math_utils import get_rule_based_math_reward
 from openai import OpenAI
 from tqdm import tqdm
+from slime.rollout.rm_hub import get_deepscaler_rule_based_reward
 
 TASK_TYPE = "math"
 
 SAMPLING_PARAMS = {
     "top_p": 1,
 }
+
+
+def get_rule_based_math_reward(item):
+    messages = item["messages"]
+    label = item["label"]
+    assert messages[-1]["role"] == "assistant", "last message must be assistant, but got {}".format(
+        messages[-1]["role"]
+    )
+
+    response = messages[-1]["content"]
+    if response is None or len(response) == 0:
+        return 0
+
+    reward = get_deepscaler_rule_based_reward(response, label)
+    return reward
 
 
 def query_single_turn(client, messages, sampling_params, tools=None):
@@ -160,10 +175,7 @@ class BaseGenerator:
             self.client = OpenAI(api_key="test", base_url=remote_engine_url)
 
     def send_data_to_buffer(self, data):
-        if "/buffer/write" not in self.remote_buffer_url:
-            remote_buffer_url = self.remote_buffer_url.rstrip("/") + "/buffer/write"
-        else:
-            remote_buffer_url = self.remote_buffer_url
+        remote_buffer_url = self.remote_buffer_url.rstrip("/") + "/buffer/write"
 
         for _ in range(2):
             try:
@@ -184,21 +196,19 @@ class BaseGenerator:
             cnt = 0
             items = []
             skipped_count = 0
-            with open(input_file, "r") as r:
-                print("read files")
-                for line in r:
+            with open(input_file, "r") as f:
+                for i, line in enumerate(f):
                     item = json.loads(line)
+                    if "instance_id" not in item:
+                        item["instance_id"] = i
                     items.append(item)
-            print("read files done: ", len(items))
             random.shuffle(items)
 
             for _ in range(self.num_repeats):
 
                 for item in items:
-                    for internal_idx in range(self.num_repeat_per_sample):
+                    for _ in range(self.num_repeat_per_sample):
                         item_repeat = copy.deepcopy(item)
-                        if "instance_id" not in item_repeat:
-                            raise ValueError(f"instance_id not in item: {item}, the input data must have instance_id")
 
                         if "uid" not in item_repeat:
                             item_repeat["uid"] = str(uuid.uuid4())
@@ -239,15 +249,12 @@ class BaseGenerator:
         process.start()
 
         progress_bar = tqdm()
-        print("----- GOGOGOGOGOGOGO !!!!!")
-
         num_finished = 0
         while num_finished < self.num_process:
             item = done_queue.get()
             if item == "COMPLETE":
                 num_finished += 1
             else:
-                # print(f'save {num_save} examples to {output_file}', end='\r')
                 assert "reward" in item, f"reward not in item: {item}"
                 assert "instance_id" in item, f"instance_id not in item: {item}"
                 self.send_data_to_buffer(item)
@@ -341,4 +348,4 @@ def is_valid_group(group, min_valid_group_size, task_type="math"):
 
     is_valid = is_finished and valid_count >= min_valid_group_size
 
-    return is_valid, is_finished
+    return is_valid

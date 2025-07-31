@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
 import torch
 
@@ -17,7 +17,7 @@ class Sample:
     response: str = ""
     response_length: int = 0
     label: Optional[str] = None
-    reward: Optional[Union[float, dict[str, float]]] = None
+    reward: Optional[Union[float, dict[str, Any]]] = None
     loss_mask: Optional[list[int]] = None
 
     class Status(Enum):
@@ -38,6 +38,9 @@ class Sample:
     def from_dict(data: dict):
         data["status"] = Sample.Status(data["status"])
         return Sample(**data)
+
+    def get_reward_value(self, args) -> float:
+        return self.reward if not args.reward_key else self.reward[args.reward_key]
 
 
 @dataclass

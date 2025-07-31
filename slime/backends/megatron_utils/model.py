@@ -5,7 +5,6 @@ from contextlib import nullcontext
 from functools import partial
 
 import torch
-import wandb
 from megatron.core import mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import DistributedDataParallelConfig, finalize_model_grads
@@ -17,10 +16,11 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
+import wandb
 from slime.utils.memory_utils import clear_memory
 
 from .checkpoint import load_checkpoint, save_checkpoint
-from .data import get_batch, set_local_storage
+from .data import get_batch
 from .loss import get_log_probs_and_entropy, loss_function
 from .models import get_model_provider_and_type
 
@@ -162,7 +162,7 @@ def disable_forward_pre_hook(model_chunks, param_sync=True):
 
 
 @torch.no_grad()
-def forward_only(args, model, data_iterator, num_microbatches, store_prefix=""):
+def forward_only(args, model, data_iterator, num_microbatches, store_prefix="", rollout_data=None):
     """Only do the forward pass and calculate the logprob."""
 
     config = get_model_config(model[0])
@@ -249,7 +249,7 @@ def forward_only(args, model, data_iterator, num_microbatches, store_prefix=""):
                 for value, origin_index in zip(values, origin_indices):
                     origin_values[origin_index] = value
                 values = origin_values
-            set_local_storage(f"{store_prefix}{key}", values)
+            rollout_data[f"{store_prefix}{key}"] = values
 
 
 def train_one_step(args, rollout_id, step_id, data_iterator, model, optimizer, opt_param_scheduler, num_microbatches):

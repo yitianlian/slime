@@ -14,7 +14,7 @@
       - [Environment Setup](#environment-setup)
       - [Examples](#examples)
         - [Dense Model Examples: GLM-4-9B and Qwen3-4B](#Dense-Model-Examples-GLM-4-9B-and-Qwen3-4B)
-        - [MoE Model Example: Qwen3-30B-A3B](#MoE-Model-Example-Qwen3-30B-A3B)
+        - [MoE Model Example: Qwen3-30B-A3B and DeepSeek-R1](#MoE-Model-Example-Qwen3-30B-A3B-and-DeepSeek-R1)
         - [Multi-Turn + Tool Calling Example: Search-R1 lite](#Multi-Turn--Tool-Calling-Example-Search-R1-lite)
         - [SFT Example: Qwen3-4B-Base with OpenHermes-2.5](#SFT-Example-Qwen3-4B-Base-with-OpenHermes-25)
   - [Checkpoint Format Conversion](#checkpoint-format-conversion)
@@ -58,14 +58,15 @@ pip install -e .
 
 We provide examples to use [GLM-4-9B](https://huggingface.co/THUDM/GLM-Z1-9B-0414) and [Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B), please refer to:
 
-- [Example: GLM-4-9B Model](docs/en/models/glm4-9B.md).
-- [Example: Qwen3-4B Model](docs/en/models/qwen3-4B.md).
+- [Example: GLM-4-9B](docs/en/models/glm4-9B.md).
+- [Example: Qwen3-4B](docs/en/models/qwen3-4B.md).
 
-#### MoE Model Example: Qwen3-30B-A3B
+#### MoE Model Example: Qwen3-30B-A3B and DeepSeek-R1
 
 For MoE example, please refer to:
 
-- [Example: Qwen3-30B-A3B Model](docs/en/models/qwen3-30B-A3B.md).
+- [Example: Qwen3-30B-A3B](docs/en/models/qwen3-30B-A3B.md).
+- [Example: Training DeepSeek R1 with 128xH100](docs/en/models/deepseek-r1.md)
 
 #### Multi-Turn + Tool Calling Example: Search-R1 lite
 
@@ -85,7 +86,9 @@ Since slime uses Megatron, and Megatron does not support loading Hugging Face ch
 
 #### HF → Megatron torch\_dist ckpt
 
-Use [mbridge](https://github.com/ISEEKYAN/mbridge.git) for conversion:
+We recommend using [Pai-Megatron-Patch](https://github.com/alibaba/Pai-Megatron-Patch) for mcore checkpoint conversion.
+
+If the mode you are using are not supported by Pai-Megatron-Patch, you could use [mbridge](https://github.com/ISEEKYAN/mbridge.git) for conversion:
 
 ```bash
 cd slime/
@@ -93,8 +96,6 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     --hf-checkpoint /root/GLM-Z1-9B-0414 \
     --save /root/GLM-Z1-9B-0414_torch_dist
 ```
-
-When encountering a model that is not temporarily supported by mbridge, you can consider using [Pai-Megatron-Patch](https://github.com/alibaba/Pai-Megatron-Patch) for conversion.
 
 ⚠️ If you encounter an issue where slime cannot be found, please run `pip install -e .` in the slime directory.
 
@@ -194,7 +195,7 @@ For complete usage instructions, please refer to the [Usage Documentation](docs/
 
 ## Hardware Support
 - Nvidia: refer to this repo README
-- AMD: refer to the [toturial](docs/en/amd_toturial.md)
+- AMD: refer to the [tutorial](docs/en/amd_tutorial.md)
 
 ## FAQ & Acknowledgements
 
