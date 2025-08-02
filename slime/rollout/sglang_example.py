@@ -41,11 +41,10 @@ class GenerateState(metaclass=SingletonMeta):
 
         # Add token output mode configuration
         if getattr(args, "use_token_output", False):
-            self.sampling_params["return_logprob"] = True
             self.use_token_output = True
         else:
             self.use_token_output = False
-
+        print(self.sampling_params)
         self.reset()
 
     def reset(self):
@@ -101,14 +100,15 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         payload = {
             "input_ids": input_token_ids,
             "sampling_params": sampling_params,
+            "return_logprob": True,
         }
 
         output = await post(url, payload, use_http2=args.use_http2)
-
         # Extract new response tokens (SGLang should return only the new tokens)
         assert (
             "meta_info" in output and "output_token_logprobs" in output["meta_info"]
         ), "output_token_logprobs is not in the output"
+
         new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
 
         # Update sample with tokens directly
