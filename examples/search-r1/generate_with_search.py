@@ -102,30 +102,11 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
     response = ""
     response_token_ids = []
     loss_masks = []
-
     for _ in range(SEARCH_R1_CONFIGS["max_turns"]):
-        if state.use_token_output:
-            # Token-based mode: use tokens directly
-            if len(response) > 0:
-                input_token_ids = prompt_tokens_ids + response_token_ids
-            else:
-                input_token_ids = prompt_tokens_ids
-
-            payload = {
-                "input_ids": input_token_ids,
-                "sampling_params": {
-                    **sampling_params,
-                    "stop": ["</search>", "</answer>"],
-                },
-                "return_logprob": True,
-            }
-        else:
-            # String-based mode: original implementation
-            payload = {
-                "text": prompt + response,
-                "sampling_params": sampling_params,
-            }
-
+        payload = {
+            "text": prompt + response,
+            "sampling_params": sampling_params,
+        }
         output = await post(url, payload, use_http2=args.use_http2)
 
         # abort
@@ -133,25 +114,10 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
             sample.status = Sample.Status.ABORTED
             return sample
 
-        if state.use_token_output:
-            # Extract new response tokens
-            assert (
-                "meta_info" in output and "output_token_logprobs" in output["meta_info"]
-            ), "output_token_logprobs is not in the output"
-            new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            cur_response = state.tokenizer.decode(new_response_tokens, skip_special_tokens=False)
-        else:
-            cur_response = output["text"]
-        if not state.use_token_output:
-            cur_response = postprocess_responses(cur_response)
-        else:
-            assert (
-                postprocess_responses(cur_response) == cur_response
-            ), "The postprocessed response is not the same as the original response"
+        cur_response = output["text"]
+        cur_response = postprocess_responses(cur_response)
 
-        if not state.use_token_output:
-            cur_response_token_ids = state.tokenizer(cur_response, add_special_tokens=False)["input_ids"]
-
+        cur_response_token_ids = state.tokenizer(cur_response, add_special_tokens=False)["input_ids"]
         response += cur_response
         response_token_ids += cur_response_token_ids
         loss_masks += [1] * len(cur_response_token_ids)
