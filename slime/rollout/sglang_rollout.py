@@ -39,12 +39,6 @@ class GenerateState(metaclass=SingletonMeta):
             spaces_between_special_tokens=False,
         )
 
-        # Add token output mode configuration
-        if getattr(args, "use_token_output", False):
-            self.use_token_output = True
-        else:
-            self.use_token_output = False
-        print(self.sampling_params)
         self.reset()
 
     def reset(self):
@@ -89,43 +83,39 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         sample.status = Sample.Status.TRUNCATED
         return sample
 
-    if state.use_token_output:
+    # Prepare payload - shared structure
+    payload = {
+        "sampling_params": sampling_params,
+        "return_logprob": args.use_token_output,
+    }
+
+    if args.use_token_output:
         # Token-based mode: use tokens directly
-        # For continuation, we need to combine existing response tokens
         if len(sample.response) > 0:
             input_token_ids = sample.tokens
         else:
             input_token_ids = state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+        payload["input_ids"] = input_token_ids
+    else:
+        # String-based mode: original implementation
+        input_text = sample.prompt + sample.response
+        payload["text"] = input_text
 
-        payload = {
-            "input_ids": input_token_ids,
-            "sampling_params": sampling_params,
-            "return_logprob": True,
-        }
+    output = await post(url, payload, use_http2=args.use_http2)
 
-        output = await post(url, payload, use_http2=args.use_http2)
-        # Extract new response tokens (SGLang should return only the new tokens)
+    if args.use_token_output:
+        # Extract new response tokens
         assert (
             "meta_info" in output and "output_token_logprobs" in output["meta_info"]
         ), "output_token_logprobs is not in the output"
-
         new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
 
         # Update sample with tokens directly
         sample.tokens = sample.tokens + new_response_tokens
         sample.response_length += len(new_response_tokens)
-
         sample.response += state.tokenizer.decode(new_response_tokens, skip_special_tokens=False)
     else:
-        # String-based mode: original implementation
-        input_text = sample.prompt + sample.response
-
-        payload = {
-            "text": input_text,
-            "sampling_params": sampling_params,
-        }
-
-        output = await post(url, payload, use_http2=args.use_http2)
+        # String-based processing
         sample.response += output["text"]
         prompt_tokens_ids = state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
         response_token_ids = state.tokenizer(sample.response, add_special_tokens=False)["input_ids"]
