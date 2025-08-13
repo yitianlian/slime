@@ -83,13 +83,16 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         sample.status = Sample.Status.TRUNCATED
         return sample
 
+    assert (
+        not args.enable_off_policy_correction or args.use_token_output
+    ), "token output is required for off-policy correction"
     # Prepare payload - shared structure
     payload = {
         "sampling_params": sampling_params,
-        "return_logprob": args.use_token_output,
+        "return_logprob": args.use_token_output or args.enable_off_policy_correction,
     }
 
-    if args.use_token_output:
+    if args.use_token_output or args.enable_off_policy_correction:
         # Token-based mode: use tokens directly
         if len(sample.response) > 0:
             input_token_ids = sample.tokens
@@ -119,6 +122,13 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         sample.tokens = sample.tokens + new_response_tokens
         sample.response_length += len(new_response_tokens)
         sample.response += state.tokenizer.decode(new_response_tokens, skip_special_tokens=False)
+
+        # Extract rollout log probabilities for off-policy correction
+        if args.enable_off_policy_correction:
+            new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+            if sample.rollout_log_probs is None:
+                sample.rollout_log_probs = []
+            sample.rollout_log_probs.extend(new_response_log_probs)
     else:
         # String-based processing
         sample.response += output["text"]
