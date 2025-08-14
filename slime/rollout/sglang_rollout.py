@@ -9,6 +9,7 @@ from slime.utils.data import Dataset
 from slime.utils.http_utils import get, post
 from slime.utils.misc import SingletonMeta, load_function
 from slime.utils.types import Sample
+from slime.rollout.components.sample_generator import generate_one_sample_vanilla
 
 from .rm_hub import async_rm, batched_async_rm
 
@@ -168,7 +169,7 @@ async def generate_and_rm(args, sample: Sample, sampling_params: dict, evaluatio
             custom_generate_func = load_function(args.custom_generate_function_path)
             sample = await custom_generate_func(args, sample, sampling_params)
         else:
-            sample = await generate(args, sample, sampling_params)
+            sample = await generate_one_sample_vanilla(args, state.tokenizer, sample, sampling_params)
 
     if sample.status == Sample.Status.ABORTED:
         return sample
