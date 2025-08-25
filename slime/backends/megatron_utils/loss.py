@@ -5,7 +5,7 @@ from megatron.core import mpu
 
 from slime.utils.distributed_utils import distributed_masked_whiten
 from slime.utils.misc import load_function
-from .cp_utils import all_gather_with_cp
+from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
 from slime.utils.ppo_utils import (
     compute_approx_kl,
     compute_entropy_from_logits,
@@ -15,8 +15,6 @@ from slime.utils.ppo_utils import (
     get_reinforce_plus_plus_baseline_advantages,
     get_reinforce_plus_plus_returns,
 )
-
-from .cp_utils import get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean, all_gather_with_cp
 
 
 def calculate_log_probs_and_entropy(logits, tokens, with_entropy: bool = False):
@@ -53,7 +51,7 @@ def get_log_probs_and_entropy(
     assert logits.dtype == torch.float32, f"{logits.dtype}"
 
     logits = logits.squeeze(0)
-    logits.div_(args.rollout_temperature)
+    logits = logits.div(args.rollout_temperature)
 
     cp_size = mpu.get_context_parallel_world_size()
 
@@ -244,7 +242,6 @@ def policy_loss_function(args, batch, logits, sum_of_sample_mean):
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
-    extended_lengths = [len(log_prob) for log_prob in log_probs]
 
     if args.advantage_estimator == "gspo":
         # GSPO mode needs full log_probs for KL calculation
@@ -288,61 +285,42 @@ def policy_loss_function(args, batch, logits, sum_of_sample_mean):
             ), f"{batch['response_lengths'][i]} vs {len(rollout_log_prob_list)}"
             rollout_log_probs_tensors.append(torch.tensor(rollout_log_prob_list, device=log_probs.device))
 
-        rollout_log_probs_flat = torch.cat(rollout_log_probs_tensors, dim=0)
+        # Apply CP cutting to rollout_log_probs to match current policy structure
+        cp_size = mpu.get_context_parallel_world_size()
 
-        # Gather full log_probs only when off-policy correction is enabled
-        if args.advantage_estimator == "gspo":
-            # GSPO mode already has full_log_probs
-            current_policy_log_probs = torch.cat(full_log_probs, dim=0)
+        if cp_size > 1:
+            rollout_log_probs_cut = []
+            for i, rollout_tensor in enumerate(rollout_log_probs_tensors):
+                total_length = total_lengths[i]
+                response_length = response_lengths[i]
+                prompt_length = total_length - response_length
+
+                # Get CP offset information (same as in get_sum_of_sample_mean)
+                _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(total_length, response_length)
+
+                # Extract the chunks for this CP rank (same logic as loss_mask cutting)
+                chunk_0 = rollout_tensor[tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length]
+                chunk_1 = rollout_tensor[tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length]
+
+                # Concatenate the chunks
+                cut_tensor = torch.cat([chunk_0, chunk_1], dim=0)
+                rollout_log_probs_cut.append(cut_tensor)
+
+            rollout_log_probs_flat = torch.cat(rollout_log_probs_cut, dim=0)
         else:
-            # Non-GSPO mode: gather full log_probs only for off-policy correction
-            cp_size = mpu.get_context_parallel_world_size()
-            if cp_size > 1:
-                full_log_probs_for_correction = [
-                    all_gather_with_cp(log_prob, total_length, response_length)
-                    for log_prob, total_length, response_length in zip(
-                        log_probs_and_entropy["log_probs"], total_lengths, response_lengths
-                    )
-                ]
-                current_policy_log_probs = torch.cat(full_log_probs_for_correction, dim=0)
-            else:
-                current_policy_log_probs = log_probs
+            # No CP, use original tensors
+            rollout_log_probs_flat = torch.cat(rollout_log_probs_tensors, dim=0)
 
-        # Calculate importance sampling ratio: exp first, then mean, then clamp
-        log_importance_ratio = current_policy_log_probs - rollout_log_probs_flat
+        current_policy_log_probs = log_probs  # Already CP-cut
 
-        # Convert to ratio first (exp), then calculate per-sample ratios, then clamp
-        importance_ratio = torch.exp(log_importance_ratio)  # [total_tokens]
+        # Calculate importance sampling ratio
+        importance_ratio = torch.exp(current_policy_log_probs - rollout_log_probs_flat)
 
-        # Calculate per-sample importance ratios (masked mean for each sample)
-        sample_importance_ratios = []
-        start_idx = 0
-        for i, response_length in enumerate(response_lengths):
-            end_idx = start_idx + response_length
-            sample_ratios = importance_ratio[start_idx:end_idx]  # [response_length]
-            loss_mask = batch["loss_masks"][i]  # [response_length]
-
-            # Calculate masked mean for this sample
-            sample_ratio = (sample_ratios * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            sample_importance_ratios.append(sample_ratio)
-            start_idx = end_idx
-
-        # Apply clamp to per-sample ratios
-        sample_importance_ratios = torch.stack(sample_importance_ratios)  # [num_samples]
-        clamped_sample_ratios = torch.clamp(sample_importance_ratios, max=args.off_policy_correction_clip_threshold)
-
-        # Expand back to token-level for multiplication with pg_loss
-        expanded_ratios = []
-        for i, length_on_the_device in enumerate(extended_lengths):
-            expanded_ratios.extend([clamped_sample_ratios[i]] * length_on_the_device)
-        expanded_ratios = torch.stack(expanded_ratios)  # [total_tokens]
+        # Clamp the importance ratio directly
+        clamped_importance_ratio = torch.clamp(importance_ratio, max=args.off_policy_correction_clip_threshold)
 
         # Apply the correction to policy loss
-        pg_loss = pg_loss * expanded_ratios.detach()
-
-    #     rollout_kl = sum_of_sample_mean(log_importance_ratio)
-    # else:
-    #     rollout_kl = torch.tensor(0.0, device=log_probs.device)
+        pg_loss = pg_loss * clamped_importance_ratio.detach()
 
     pg_loss = sum_of_sample_mean(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)

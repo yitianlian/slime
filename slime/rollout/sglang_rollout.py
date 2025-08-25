@@ -9,7 +9,6 @@ from slime.utils.data import Dataset
 from slime.utils.http_utils import get, post
 from slime.utils.misc import SingletonMeta, load_function
 from slime.utils.types import Sample
-from slime.rollout.components.sample_generator import generate_one_sample_vanilla
 
 from .rm_hub import async_rm, batched_async_rm
 
@@ -84,60 +83,47 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         sample.status = Sample.Status.TRUNCATED
         return sample
 
-    assert (
-        not args.enable_off_policy_correction or args.use_token_output
-    ), "token output is required for off-policy correction"
+    # Token-based mode: use tokens directly
+    if len(sample.response) > 0:
+        input_token_ids = sample.tokens
+    else:
+        # First turn: initialize with prompt tokens
+        prompt_token_ids = state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+        input_token_ids = prompt_token_ids
+        # Initialize sample.tokens with prompt for subsequent turns
+        if not sample.tokens:  # Only set if empty
+            sample.tokens = prompt_token_ids
+
     # Prepare payload - shared structure
     payload = {
+        "input_ids": input_token_ids,
         "sampling_params": sampling_params,
-        "return_logprob": args.use_token_output or args.enable_off_policy_correction,
+        "return_logprob": True,
     }
-
-    if args.use_token_output or args.enable_off_policy_correction:
-        # Token-based mode: use tokens directly
-        if len(sample.response) > 0:
-            input_token_ids = sample.tokens
-        else:
-            # First turn: initialize with prompt tokens
-            prompt_token_ids = state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
-            input_token_ids = prompt_token_ids
-            # Initialize sample.tokens with prompt for subsequent turns
-            if not sample.tokens:  # Only set if empty
-                sample.tokens = prompt_token_ids
-        payload["input_ids"] = input_token_ids
-    else:
-        # String-based mode: original implementation
-        input_text = sample.prompt + sample.response
-        payload["text"] = input_text
 
     output = await post(url, payload, use_http2=args.use_http2)
 
-    if args.use_token_output:
-        # Extract new response tokens
-        assert (
-            "meta_info" in output and "output_token_logprobs" in output["meta_info"]
-        ), "output_token_logprobs is not in the output"
+    # Extract new response tokens
+    if "output_token_logprobs" in output["meta_info"]:
         new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-
-        # Update sample with tokens directly - avoiding re-tokenization
-        sample.tokens = sample.tokens + new_response_tokens
-        sample.response_length += len(new_response_tokens)
-        sample.response += state.tokenizer.decode(new_response_tokens, skip_special_tokens=False)
-
-        # Extract rollout log probabilities for off-policy correction
-        if args.enable_off_policy_correction:
-            new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-            if sample.rollout_log_probs is None:
-                sample.rollout_log_probs = []
-            sample.rollout_log_probs.extend(new_response_log_probs)
     else:
-        # String-based processing
-        sample.response += output["text"]
-        prompt_tokens_ids = state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
-        response_token_ids = state.tokenizer(sample.response, add_special_tokens=False)["input_ids"]
-        sample.tokens = prompt_tokens_ids + response_token_ids
-        sample.response_length = len(response_token_ids)
+        # abort
+        new_response_tokens = []
 
+    # Update sample with tokens directly - avoiding re-tokenization
+    sample.tokens = sample.tokens + new_response_tokens
+    sample.response_length += len(new_response_tokens)
+    sample.response += output["text"]
+
+    # Extract rollout log probabilities for off-policy correction
+    if args.enable_off_policy_correction:
+        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+        if sample.rollout_log_probs is None:
+            sample.rollout_log_probs = []
+        sample.rollout_log_probs.extend(new_response_log_probs)
+    assert sample.response_length == len(
+        sample.rollout_log_probs
+    ), f"response_length: {sample.response_length} vs {len(sample.rollout_log_probs)}"
     match output["meta_info"]["finish_reason"]["type"]:
         case "length":
             sample.status = Sample.Status.TRUNCATED
@@ -169,16 +155,26 @@ async def generate_and_rm(args, sample: Sample, sampling_params: dict, evaluatio
             custom_generate_func = load_function(args.custom_generate_function_path)
             sample = await custom_generate_func(args, sample, sampling_params)
         else:
-            sample = await generate_one_sample_vanilla(args, state.tokenizer, sample, sampling_params)
-
-    if sample.status == Sample.Status.ABORTED:
-        return sample
+            sample = await generate(args, sample, sampling_params)
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
         return sample
 
-    sample.reward = await async_rm(args, sample)
+    # multi samples
+    if isinstance(sample, list):
+        samples = sample
+        if any([sample.status == Sample.Status.ABORTED for sample in samples]):
+            return samples
+
+        rewards = await async_rm(args, samples)
+        for sample, reward in zip(samples, rewards):
+            sample.reward = reward
+    else:
+        if sample.status == Sample.Status.ABORTED:
+            return sample
+
+        sample.reward = await async_rm(args, sample)
 
     return sample
 
