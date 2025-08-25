@@ -244,20 +244,14 @@ def policy_loss_function(args, batch, logits, sum_of_sample_mean):
     log_probs = log_probs_and_entropy["log_probs"]
 
     if args.advantage_estimator == "gspo":
-        # GSPO mode needs full log_probs for KL calculation
-        cp_size = mpu.get_context_parallel_world_size()
-        if cp_size > 1:
-            full_log_probs = [
-                all_gather_with_cp(log_prob, total_length, response_length)
-                for log_prob, total_length, response_length in zip(log_probs, total_lengths, response_lengths)
-            ]
-            full_old_log_probs = [
-                all_gather_with_cp(old_log_prob, total_length, response_length)
-                for old_log_prob, total_length, response_length in zip(old_log_probs, total_lengths, response_lengths)
-            ]
-        else:
-            full_log_probs = log_probs
-            full_old_log_probs = old_log_probs
+        full_log_probs = [
+            all_gather_with_cp(log_prob, total_length, response_length)
+            for log_prob, total_length, response_length in zip(log_probs, total_lengths, response_lengths)
+        ]
+        full_old_log_probs = [
+            all_gather_with_cp(old_log_prob, total_length, response_length)
+            for old_log_prob, total_length, response_length in zip(old_log_probs, total_lengths, response_lengths)
+        ]
 
         loss_masks = batch["loss_masks"]
         ppo_kl = [
@@ -360,7 +354,6 @@ def policy_loss_function(args, batch, logits, sum_of_sample_mean):
             "pg_clipfrac": pg_clipfrac.clone().detach(),
             "ppo_kl": ppo_kl.clone().detach(),
             "kl_loss": kl_loss.clone().detach(),
-            # "rollout_kl": rollout_kl.clone().detach(),
         },
     )
 
