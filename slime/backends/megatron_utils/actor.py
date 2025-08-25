@@ -88,6 +88,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.sleep(("model"))
 
         self.rollout_engines = None
+        self.weight_version = 0
 
         self.rollout_data_postprocess = None
         if self.args.rollout_data_postprocess_path is not None:
@@ -284,7 +285,8 @@ class MegatronTrainRayActor(TrainRayActor):
         dist.barrier(group=get_gloo_group())
 
     @timer
-    def update_weights(self):
+    def update_weights(self, rollout_id: int):
+        self.weight_version = f"rollout_{rollout_id}"
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
@@ -293,7 +295,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload and not torch.version.hip else nullcontext():
             print_memory("before update_weights")
-            self.weight_updator.update_weights()
+            self.weight_updator.update_weights(weight_version=self.weight_version)
             print_memory("after update_weights")
 
             if getattr(self.args, "keep_old_actor", False):

@@ -41,7 +41,7 @@ def train(args):
         ray.get(rollout_manager.async_onload(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
 
     # always update weight first so that sglang has the loaded weights from training.
-    ray.get(actor_model.async_update_weights())
+    ray.get(actor_model.async_update_weights(rollout_id=args.start_rollout_id - 1))
 
     if args.offload:
         ray.get(rollout_manager.async_onload(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
@@ -72,7 +72,7 @@ def train(args):
             ray.get(actor_model.async_offload())
             ray.get(rollout_manager.async_onload(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
 
-        ray.get(actor_model.async_update_weights())
+        ray.get(actor_model.async_update_weights(rollout_id=rollout_id))
 
         if args.offload:
             ray.get(rollout_manager.async_onload(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
