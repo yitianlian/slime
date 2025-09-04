@@ -1,13 +1,12 @@
 // Inject a language toggle button into the topbar (sphinx-book-theme compatible)
 (function(){
   const STORAGE_KEY = 'slime-doc-lang';
-  const AVAILABLE = ['en','zh'];
+  // Default language EN has no URL prefix; Chinese uses '/zh/' inserted after optional repo root.
   function detectCurrent(){
-    const { parts, langIndex } = analyzePath();
-    if(langIndex !== -1) return parts[langIndex];
-    return 'en';
+    const { zhIndex } = analyzePath();
+    return zhIndex !== -1 ? 'zh' : 'en';
   }
-  function otherLang(lang){ return lang === 'en' ? 'zh' : 'en'; }
+  function otherLang(lang){ return lang === 'zh' ? 'en' : 'zh'; }
   /**
    * Analyze current pathname to figure out repo root + language segment pattern.
    * Supports patterns:
@@ -18,50 +17,35 @@
    */
   function analyzePath(){
     const rawParts = window.location.pathname.split('/').filter(Boolean);
-    let parts = rawParts.slice();
+    const parts = rawParts.slice();
     let repoRoot = null;
-    let langIndex = -1;
-
-    if(parts[0] && AVAILABLE.includes(parts[0])){
-      langIndex = 0; // /en/...
-    } else if(parts.length > 1 && AVAILABLE.includes(parts[1])){
+    if(parts.length > 0 && (window.location.host.endsWith('github.io') || parts[0] === 'slime')){
       repoRoot = parts[0];
-      langIndex = 1; // /slime/en/...
-    } else {
-      // No explicit language; try to detect repo root (GitHub Pages typical) so we insert AFTER it.
-      // Heuristic: if host ends with github.io OR first segment matches known repo name 'slime'.
-      if(parts.length > 0 && (window.location.host.endsWith('github.io') || parts[0] === 'slime')){
-        repoRoot = parts[0];
-      }
     }
-    return { parts, repoRoot, langIndex };
+    let zhIndex = -1;
+    if(parts[0] === 'zh') zhIndex = 0; else if(parts[1] === 'zh') zhIndex = 1;
+    return { parts, repoRoot, zhIndex };
   }
 
   function buildTargetUrl(target){
     const url = new URL(window.location.href);
     const trailingSlash = url.pathname.endsWith('/') || url.pathname === '/';
-    const { parts, repoRoot, langIndex } = analyzePath();
-
-    if(langIndex === 0){
-      // replace first
-      parts[0] = target;
-    } else if(langIndex === 1){
-      parts[1] = target; // replace second (/repo/en/)
-    } else if(repoRoot){
-      // insert after repo root
-      if(parts.length === 1){
-        parts.push(target); // /repo/ -> /repo/zh/
-      } else {
-        parts.splice(1, 0, target);
+    const { parts, repoRoot, zhIndex } = analyzePath();
+    if(target === 'zh'){
+      if(zhIndex === -1){
+        if(repoRoot){
+          if(parts.length === 1) parts.push('zh'); else parts.splice(1,0,'zh');
+        } else {
+          parts.unshift('zh');
+        }
       }
-    } else {
-      // no repo root detected; put language first
-      parts.unshift(target);
+    } else { // target en => remove zh if present
+      if(zhIndex !== -1) parts.splice(zhIndex,1);
     }
-
     let newPath = '/' + parts.join('/');
-    // Add trailing slash if original had it and new path doesn't look like a file (no extension)
-    if(trailingSlash && !/\.[a-zA-Z0-9]+$/.test(parts[parts.length-1] || '')) newPath += '/';
+    if(newPath === '/') {
+      // stay root
+    } else if(trailingSlash && !/\.[a-zA-Z0-9]+$/.test(parts[parts.length-1] || '')) newPath += '/';
     url.pathname = newPath;
     return url.toString();
   }
