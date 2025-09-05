@@ -302,6 +302,7 @@ class UpdateWeightFromTensor:
         self.vocab_size = vocab_size
         self.quantization_config = quantization_config
         self.param_info_buckets = get_param_info_buckets(self.args, self.model)
+        self.weight_version = 0
 
     def connect_rollout_engines(self, rollout_engines, rollout_engine_lock):
         self.rollout_engines = rollout_engines
@@ -321,13 +322,16 @@ class UpdateWeightFromTensor:
                 self._ipc_engine = engine
 
     @torch.no_grad()
-    def update_weights(self, weight_version: str):
+    def update_weights(self):
+        self.weight_version += 1
+        weight_version_str = str(self.weight_version)
+
         rank = dist.get_rank()
         if rank == 0:
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
         for param_infos in tqdm(self.param_info_buckets, disable=rank != 0, desc="Update weights"):
-            self._update_bucket_weights_from_tensor(param_infos, weight_version)
+            self._update_bucket_weights_from_tensor(param_infos, weight_version_str)
 
         dist.barrier(group=get_gloo_group())
 
@@ -440,6 +444,7 @@ class UpdateWeightFromDistributed:
         self.model_name = model_name
         self.vocab_size = vocab_size
         self.quantization_config = quantization_config
+        self.weight_version = 0
 
     def connect_rollout_engines(self, rollout_engines, rollout_engine_lock):
         self.rollout_engines = rollout_engines
@@ -484,6 +489,9 @@ class UpdateWeightFromDistributed:
 
     @torch.no_grad()
     def update_weights(self):
+        self.weight_version += 1
+        weight_version_str = str(self.weight_version)
+
         if dist.get_rank() == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
@@ -502,7 +510,9 @@ class UpdateWeightFromDistributed:
             )
 
         if converted_named_tensors:
-            self._update_bucket_weights_from_distributed(converted_named_tensors, pbar=pbar)
+            self._update_bucket_weights_from_distributed(
+                converted_named_tensors, weight_version=weight_version_str, pbar=pbar
+            )
 
         dist.barrier(group=get_gloo_group())
 
@@ -516,7 +526,9 @@ class UpdateWeightFromDistributed:
             )
 
         if named_tensors:
-            self._update_expert_bucket_weights_from_distributed(named_tensors, pbar=pbar)
+            self._update_expert_bucket_weights_from_distributed(
+                named_tensors, weight_version=weight_version_str, pbar=pbar
+            )
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
