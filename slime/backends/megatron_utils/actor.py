@@ -314,7 +314,7 @@ class MegatronTrainRayActor(TrainRayActor):
         dist.barrier(group=get_gloo_group())
 
     @timer
-    def update_weights(self, rollout_id: int):
+    def update_weights(self):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
