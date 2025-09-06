@@ -466,6 +466,21 @@ class StringRadixTrie:
         """Cleanup when object is destroyed."""
         self.stop_cleanup_timer()
 
+    def get_token_from_text(self, text: str):
+        """
+        Get tokens from text by looking up in radix tree.
+        This is a placeholder method that should be implemented to retrieve tokens for a given text.
+        
+        Args:
+            text: Input text to get tokens for
+            
+        Returns:
+            List of token IDs corresponding to the input text
+        """
+        # TODO: 实现通过text获取所有token的逻辑
+        # 这里需要实现一个在 radix tree 中查找给定文本对应的所有 token IDs 的方法
+        return []
+
 
 # Example usage and testing
 if __name__ == "__main__":
