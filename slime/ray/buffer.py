@@ -1,16 +1,16 @@
 import logging
 from pathlib import Path
-from typing import Union
 from time import time
-import wandb
+from typing import Union
 
 import ray
 import torch
 
-from slime.utils.misc import load_function
-from slime.utils.types import Sample
+import wandb
 from slime.ray.rollout_data_source import RolloutDataSourceWithBuffer
+from slime.utils.misc import load_function
 from slime.utils.ray_utils import Box
+from slime.utils.types import Sample
 from slime.utils.wandb_utils import init_wandb_secondary
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -51,8 +51,14 @@ class RolloutController:
         else:
             data = self.generate_rollout(self.args, rollout_id, self.data_source, evaluation=False)
             # flatten the data if it is a list of lists
-            if isinstance(data[0], list):
+            while isinstance(data[0], list):
                 data = sum(data, [])
+
+            if len(data) % self.args.global_batch_size != 0:
+                trim_len = (len(data) // self.args.global_batch_size) * self.args.global_batch_size
+                origin_data_length = len(data)
+                data = data[:trim_len]
+                print(f"trim number of samples from {origin_data_length} to {trim_len}")
 
         # TODO to be refactored (originally Buffer._set_data)
         # TODO extract to a function during refactor
@@ -67,8 +73,8 @@ class RolloutController:
                 ),
                 path,
             )
-        data = self._convert_samples_to_train_data(data)
         log_rollout_data(rollout_id, self.args, data, time() - start_time)
+        data = self._convert_samples_to_train_data(data)
         return Box(ray.put(data))
 
     def eval(self, rollout_id):
@@ -90,7 +96,11 @@ class RolloutController:
         ):
             # group norm
             rewards = torch.tensor(raw_rewards, dtype=torch.float)
-            rewards = rewards.reshape(-1, self.args.n_samples_per_prompt)
+            if rewards.shape[-1] == self.args.n_samples_per_prompt * self.args.rollout_batch_size:
+                rewards = rewards.reshape(-1, self.args.n_samples_per_prompt)
+            else:
+                # when samples count are not equal in each group
+                rewards = rewards.view(-1, rewards.shape[-1])
             mean = rewards.mean(dim=-1, keepdim=True)
             rewards = rewards - mean
 
@@ -107,10 +117,6 @@ class RolloutController:
         Convert inference generated samples to training data.
         """
         raw_rewards, rewards = self.post_process_rewards(samples)
-
-        # multi agent
-        if isinstance(samples[0], list):
-            samples = sum(samples, [])
 
         assert len(raw_rewards) == len(samples)
         assert len(rewards) == len(samples)
@@ -151,6 +157,9 @@ class RolloutController:
         if samples[0].rollout_log_probs is not None:
             train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 
+        if samples[0].train_metadata is not None:
+            train_data["metadata"] = [sample.train_metadata for sample in samples]
+
         return train_data
 
     def save(self, rollout_id):
@@ -179,14 +188,17 @@ def log_eval_data(rollout_id, args, data):
         wandb.log(log_dict)
 
 
-def log_rollout_data(rollout_id, args, data, rollout_time):
+def log_rollout_data(rollout_id, args, samples, rollout_time):
     if args.load_debug_rollout_data:
         return
 
     log_dict = {}
-    response_lengths = [sum(loss_mask) for loss_mask in data["loss_masks"]]
+    response_lengths = [
+        sum(sample.loss_mask) if sample.loss_mask is not None else sample.response_length for sample in samples
+    ]
     log_dict["perf/rollout_time"] = rollout_time
-    log_dict["perf/tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
+    if args.rollout_num_gpus is not None:
+        log_dict["perf/tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
     log_dict["perf/longest_sample_tokens_per_sec"] = max(response_lengths) / rollout_time
     print(f"perf {rollout_id}: {log_dict}")
     if args.use_wandb:

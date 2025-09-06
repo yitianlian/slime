@@ -74,6 +74,9 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
+            reset_megatron_args(parser, "--distributed-backend", str, "nccl")
+            reset_megatron_args(parser, "--distributed-timeout-minutes", int, 10)
+
             return parser
 
         # rollout
@@ -125,6 +128,15 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
+            )
+            parser.add_argument(
+                "--rollout-max-context-len",
+                type=int,
+                default=None,
+                help=(
+                    "The maximum context size for the inference engine during rollout."
+                    "It should no exceed the `max_position_embeddinds` in Huggingface model's `config.json`"
+                ),
             )
             parser.add_argument(
                 "--rollout-max-prompt-len",
@@ -203,26 +215,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "Regardless of whether partial rollout is used or filters are applied, "
                     "the sampling granularity is always determined by this value. "
                     "If this value is None, rollout_batch_size will be used as the default over_sampling_batch_size."
-                ),
-            )
-            parser.add_argument(
-                "--over-sampling-filter-input-size",
-                type=int,
-                default=None,
-                help=(
-                    "This is the input size for the over sampling filter."
-                    "This value will replace the rollout_batch_size as target batch size "
-                    "(number of complete, valid samples to be generated) when the over sampling filter is applied."
-                ),
-            )
-            parser.add_argument(
-                "--over-sampling-filter-path",
-                type=str,
-                default=None,
-                help=(
-                    "This parameter is used with the over_sampling_filter_input_size. "
-                    "The over sampling filter is applied only after enough data has been generated."
-                    "You could use `slime.rollout.filter_hub.over_sampling_filters.sort_by_reward_std` as an example."
                 ),
             )
             parser.add_argument(
@@ -500,6 +492,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             )
             reset_megatron_args(parser, "--load", str, None)
             reset_megatron_args(parser, "--save", str, None)
+            reset_megatron_args(parser, "--save-interval", int, None)
             reset_megatron_args(parser, "--seed", int, 1234)
 
             parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
@@ -877,19 +870,30 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
 def parse_args(add_custom_arguments=None):
     add_slime_arguments = get_slime_extra_args_provider(add_custom_arguments)
 
-    from slime.backends.megatron_utils import set_default_megatron_args
-    from slime.backends.megatron_utils import parse_args as megatron_parse_args
-    from slime.backends.megatron_utils import validate_args as megatron_validate_args
+    backend = os.environ.get("SLIME_BACKEND", "megatron").lower()
+    if backend == "megatron":
+        from slime.backends.megatron_utils import parse_args as megatron_parse_args
+        from slime.backends.megatron_utils import set_default_megatron_args
+        from slime.backends.megatron_utils import validate_args as megatron_validate_args
 
-    args = megatron_parse_args(extra_args_provider=add_slime_arguments)
-    if args.hf_checkpoint:
-        hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        hf_validate_args(args, hf_config)
+        args = megatron_parse_args(extra_args_provider=add_slime_arguments)
+        if getattr(args, "hf_checkpoint", None):
+            hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            hf_validate_args(args, hf_config)
 
-    args.rank = 0
-    args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+        args.rank = 0
+        args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+        args = set_default_megatron_args(args)
+    else:
+        print("⚠️ " * 50)
+        print(
+            f"⚠️  SLIME_BACKEND {backend} is experimental and not yet verified.\n"
+            "⚠️  Please avoid using it unless you are actively developing it."
+        )
+        print("⚠️ " * 50)
+        from slime.backends.fsdp_utils.arguments import load_fsdp_args
 
-    args = set_default_megatron_args(args)
+        args = load_fsdp_args(extra_args_provider=add_slime_arguments)
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
@@ -1019,17 +1023,17 @@ def parse_args(add_custom_arguments=None):
             "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
         )
 
-    if not args.debug_rollout_only:
+    if backend == "megatron":
         megatron_validate_args(args)
 
-    # always use varlen
-    args.variable_seq_lengths = True
-    if getattr(args, "moe_token_dispatcher_type", None) == "allgather":
-        print(
-            "--moe-token-dispatcher-type allgather does not support variable sequence length, "
-            "please use alltoall dispatcher instead."
-        )
-        args.moe_token_dispatcher_type = "alltoall"
+        # always use varlen
+        args.variable_seq_lengths = True
+        if getattr(args, "moe_token_dispatcher_type", None) == "allgather":
+            print(
+                "--moe-token-dispatcher-type allgather does not support variable sequence length, "
+                "please use alltoall dispatcher instead."
+            )
+            args.moe_token_dispatcher_type = "alltoall"
 
     sglang_validate_args(args)
 

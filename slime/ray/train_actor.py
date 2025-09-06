@@ -7,6 +7,7 @@ import torch
 import torch.distributed as dist
 
 from slime.ray.ray_actor import RayActor
+from slime.utils.distributed_utils import init_gloo_group
 
 
 def get_local_gpu_id():
@@ -43,7 +44,11 @@ class TrainRayActor(RayActor):
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(f"cuda:{local_rank}")
 
-        dist.init_process_group(backend="nccl", timeout=timedelta(minutes=30))
+        dist.init_process_group(
+            backend=args.distributed_backend,
+            timeout=timedelta(minutes=args.distributed_timeout_minutes),
+        )
+        init_gloo_group()
 
         args.rank = dist.get_rank()
         args.world_size = dist.get_world_size()
@@ -66,10 +71,6 @@ class TrainRayActor(RayActor):
 
     @abc.abstractmethod
     def train(self, rollout_id, rollout_data_ref):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def eval(self, rollout_id, rollout_data_ref):
         raise NotImplementedError
 
     @abc.abstractmethod

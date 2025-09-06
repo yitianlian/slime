@@ -1,11 +1,13 @@
 import asyncio
 import multiprocessing
+import os
 import random
 import socket
-import os
+
 import httpx
 
 SLIME_HOST_IP_ENV = "SLIME_HOST_IP"
+
 
 def find_available_port(base_port: int):
     port = base_port + random.randint(100, 1000)
@@ -36,7 +38,7 @@ def get_host_info():
     hostname = socket.gethostname()
 
     local_ip = socket.gethostbyname(hostname)
-    
+
     if SLIME_HOST_IP_ENV in os.environ:
         local_ip = os.environ[SLIME_HOST_IP_ENV]
 
