@@ -94,7 +94,7 @@ class StringRadixTrie:
     """
 
     def __init__(
-        self, max_cache_size: int = 10000, cleanup_interval: int = 300, enable_auto_cleanup: bool = True  # 5 minutes
+        self, max_cache_size: int = 10000, cleanup_interval: int = 300, enable_auto_cleanup: bool = True, tokenizer=None  # 5 minutes
     ):
         """
         Initialize the String Radix Trie.
@@ -103,10 +103,12 @@ class StringRadixTrie:
             max_cache_size: Maximum number of cached entries
             cleanup_interval: Interval in seconds for automatic cleanup
             enable_auto_cleanup: Whether to enable automatic cleanup
+            tokenizer: Optional tokenizer for converting text to tokens when not found in cache
         """
         self.max_cache_size = max_cache_size
         self.cleanup_interval = cleanup_interval
         self.enable_auto_cleanup = enable_auto_cleanup
+        self.tokenizer = tokenizer
 
         # Tree structure
         self.root = StringTreeNode()
@@ -466,10 +468,9 @@ class StringRadixTrie:
         """Cleanup when object is destroyed."""
         self.stop_cleanup_timer()
 
-    def get_token_from_text(self, text: str):
+    def get_token_from_text(self, text: str) -> List[int]:
         """
-        Get tokens from text by looking up in radix tree.
-        This is a placeholder method that should be implemented to retrieve tokens for a given text.
+        Get tokens from text by looking up in radix tree or using tokenizer.
         
         Args:
             text: Input text to get tokens for
@@ -477,10 +478,26 @@ class StringRadixTrie:
         Returns:
             List of token IDs corresponding to the input text
         """
-        # TODO: 实现通过text获取所有token的逻辑
-        # 这里需要实现一个在 radix tree 中查找给定文本对应的所有 token IDs 的方法
-        return []
-
+        # Call find_longest_prefix to get the match result
+        result = self.find_longest_prefix(text)
+        
+        # If we have a match and it covers the entire text, return the tokens
+        if result.matched_prefix and result.token_ids:
+            return result.token_ids
+            
+        # If result is empty and input text is not empty, tokenize with tokenizer
+        # This is needed because we cannot get the prompt token id from engine response
+        # We have to manually insert the text and token into the tree
+        if self.tokenizer and text:
+            # Tokenize the text using the provided tokenizer
+            tokens = self.tokenizer(text, add_special_tokens=False)["input_ids"]
+            # Insert the text and tokens into the tree
+            self.insert(text, tokens)
+            # Return the tokens
+            return tokens
+            
+        # If no tokenizer or other cases, return the matched tokens (could be empty)
+        return result.token_ids if result else []
 
 # Example usage and testing
 if __name__ == "__main__":

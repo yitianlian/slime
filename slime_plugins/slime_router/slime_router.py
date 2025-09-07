@@ -4,9 +4,30 @@ from typing import Dict, Any, Optional, List
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+import uvicorn
+import argparse
 
 # Import radix tree
 from .radix_tree import StringRadixTrie
+
+
+def run_slime_router(args: argparse.Namespace):
+    """
+    Run the Slime router with the specified configuration.
+    
+    Args:
+        args: Namespace object containing router configuration
+    """
+    # Initialize the router
+    slime_router = SlimeRouter(args.sglang_host, args.sglang_port)
+    
+    # Start the server
+    uvicorn.run(
+        slime_router.app, 
+        host=args.host, 
+        port=args.port,
+        log_level="info"
+    )
 
 
 class SlimeRouter:
@@ -39,15 +60,16 @@ class SlimeRouter:
         # Extract text from payload for radix tree operations
         input_text = payload.get("text", "")
         
+        # Get tokens for the input text from radix tree
+        match_result = self.radix_tree.find_longest_prefix(input_text) if input_text else None
+        input_tokens = match_result.token_ids if match_result else []
+        
         # Forward request to SGLang router
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 # Modify the payload to use input_ids instead of text for token-in token-out
                 sglang_payload = payload.copy()
                 if input_text:
-                    # Get tokens for the input text from radix tree
-                    match_result = self.radix_tree.find_longest_prefix(input_text) if input_text else None
-                    input_tokens = match_result.token_ids if match_result else []
                     # Replace "text" with "input_ids" 
                     sglang_payload.pop("text", None)
                     sglang_payload["input_ids"] = input_tokens
@@ -78,6 +100,28 @@ class SlimeRouter:
                     status_code=500,
                     content={"error": str(e)}
                 )
+    
+    async def get_token_from_text(self, request: Request):
+        """Get token information from text input"""
+        body = await request.body()
+        payload = json.loads(body) if body else {}
+        
+        text = payload.get("text", "")
+        
+        # Use radix tree's get_token_from_text method
+        token_ids = self.radix_tree.get_token_from_text(text)
+        
+        # This is a simplified implementation. In a real scenario, you would
+        # use a tokenizer to convert text to tokens.
+        # The response structure matches what was shown in the example.
+        result = {
+            "tokens": token_ids,  # This would be populated with actual token IDs
+            "response_length": len(token_ids),  # Length of response tokens
+            "response": text,  # The input text
+            "loss_mask": []  # Loss mask for the tokens
+        }
+        
+        return result
     
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
@@ -133,8 +177,5 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Initialize the router
-    slime_router = SlimeRouter(args.sglang_host, args.sglang_port)
-    
-    # Start the server
-    uvicorn.run(slime_router.app, host=args.host, port=args.port)
+    # Run the router
+    run_slime_router(args)
