@@ -14,6 +14,12 @@ from slime.utils.distributed_utils import get_gloo_group
 from slime.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from slime.utils.timer import Timer, timer
 
+from .ring_attention import (
+    gather_and_pad_tensor,
+    get_ring_attn_group,
+    setup_ring_attention_for_hf_model,
+    unpad_and_slice_tensor,
+)
 from .update_weight_utils import UpdateWeightFromTensor
 
 
@@ -55,6 +61,15 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # TODO: set correct auto_wrap_policy
         auto_wrap_policy = None
+
+        # Setup Ring Attention if enabled
+        self.use_ring_attention = getattr(args, "use_ring_attention", False)
+        if self.use_ring_attention:
+            model = setup_ring_attention_for_hf_model(
+                model,
+                ring_size=getattr(args, "ring_attention_size", None),
+                variant=getattr(args, "ring_attention_variant", "zigzag"),
+            )
 
         self.model = FSDP(
             model,
@@ -130,8 +145,32 @@ class FSDPTrainRayActor(TrainRayActor):
         with timer(f"{store_prefix}log_probs") and torch.no_grad():
             for batch in padded_batches:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    logits = self.model(input_ids=batch["tokens"]).logits
-                batch[f"{store_prefix}log_probs"] = gather_log_probs(logits, batch["tokens"])
+                    if self.use_ring_attention and "position_ids" in batch:
+                        # Ring attention forward pass
+                        logits = self.model(input_ids=batch["tokens"], position_ids=batch["position_ids"]).logits
+
+                        # Gather logits back from all ring attention ranks
+                        ring_attn_group = get_ring_attn_group()
+                        if ring_attn_group is not None:
+                            logits = gather_and_pad_tensor(
+                                logits,
+                                ring_attn_group,
+                                batch["ring_attn_pad_len"],
+                                batch["ring_attn_indices"],
+                                batch["original_batch_size"],
+                                batch["original_seq_len"],
+                            )
+
+                        # For ring attention, we need to reconstruct the original tokens
+                        # We'll store the original tokens in the batch for use with gathered logits
+                        if "original_tokens" not in batch:
+                            # This should not happen if data processing is correct
+                            raise ValueError("Ring attention requires original_tokens to be stored in batch")
+                        batch[f"{store_prefix}log_probs"] = gather_log_probs(logits, batch["original_tokens"])
+                    else:
+                        # Standard forward pass
+                        logits = self.model(input_ids=batch["tokens"]).logits
+                        batch[f"{store_prefix}log_probs"] = gather_log_probs(logits, batch["tokens"])
         return rollout_data
 
     def pad_and_move_to_device(self, rollout_data):
@@ -149,17 +188,45 @@ class FSDPTrainRayActor(TrainRayActor):
                 [0] * (len(t) - len(l) - 1) + l + [0] * (max_len - len(t))
                 for l, t in zip(batch_loss_masks, batch_tokens)
             ]
-            padded_batches.append(
-                {
-                    "tokens": torch.tensor(padded_tokens, dtype=torch.long, device=torch.cuda.current_device()),
-                    "loss_masks": torch.tensor(padded_loss_masks, dtype=torch.int, device=torch.cuda.current_device()),
-                    "rewards": torch.tensor(
-                        rollout_data["rewards"][i : i + self.args.micro_batch_size],
-                        dtype=torch.float,
-                        device=torch.cuda.current_device(),
-                    ),
-                }
-            )
+
+            tokens_tensor = torch.tensor(padded_tokens, dtype=torch.long, device=torch.cuda.current_device())
+            loss_masks_tensor = torch.tensor(padded_loss_masks, dtype=torch.int, device=torch.cuda.current_device())
+
+            batch_data = {
+                "tokens": tokens_tensor,
+                "loss_masks": loss_masks_tensor,
+                "rewards": torch.tensor(
+                    rollout_data["rewards"][i : i + self.args.micro_batch_size],
+                    dtype=torch.float,
+                    device=torch.cuda.current_device(),
+                ),
+            }
+
+            # Handle ring attention sequence parallelism
+            if self.use_ring_attention:
+                ring_attn_group = get_ring_attn_group()
+                if ring_attn_group is not None:
+                    # Create attention mask from loss_masks for ring attention
+                    attention_mask = (tokens_tensor != self.tokenizer.pad_token_id).int()
+
+                    # Unpad and slice for ring attention
+                    (sliced_tokens, sliced_position_ids, sliced_rolled_tokens, ring_attn_pad_len, indices) = (
+                        unpad_and_slice_tensor(tokens_tensor, attention_mask, ring_attn_group)
+                    )
+
+                    batch_data.update(
+                        {
+                            "tokens": sliced_tokens,
+                            "position_ids": sliced_position_ids,
+                            "ring_attn_pad_len": ring_attn_pad_len,
+                            "ring_attn_indices": indices,
+                            "original_batch_size": tokens_tensor.shape[0],
+                            "original_seq_len": tokens_tensor.shape[1],
+                            "original_tokens": tokens_tensor,  # Store original tokens for log prob calculation
+                        }
+                    )
+
+            padded_batches.append(batch_data)
         return padded_batches
 
     def train(self, rollout_id, rollout_data_ref):  # type: ignore[override]
@@ -218,8 +285,30 @@ class FSDPTrainRayActor(TrainRayActor):
         self.optimizer.zero_grad(set_to_none=True)
         for mbs_id, batch in enumerate(padded_batches):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                logits = self.model(input_ids=batch["tokens"]).logits
-            log_probs = gather_log_probs(logits, batch["tokens"])
+                if self.use_ring_attention and "position_ids" in batch:
+                    # Ring attention forward pass
+                    logits = self.model(input_ids=batch["tokens"], position_ids=batch["position_ids"]).logits
+
+                    # Gather logits back from all ring attention ranks
+                    ring_attn_group = get_ring_attn_group()
+                    if ring_attn_group is not None:
+                        logits = gather_and_pad_tensor(
+                            logits,
+                            ring_attn_group,
+                            batch["ring_attn_pad_len"],
+                            batch["ring_attn_indices"],
+                            batch["original_batch_size"],
+                            batch["original_seq_len"],
+                        )
+
+                    # For ring attention, use the original tokens for log prob calculation
+                    if "original_tokens" not in batch:
+                        raise ValueError("Ring attention requires original_tokens to be stored in batch")
+                    log_probs = gather_log_probs(logits, batch["original_tokens"])
+                else:
+                    # Standard forward pass
+                    logits = self.model(input_ids=batch["tokens"]).logits
+                    log_probs = gather_log_probs(logits, batch["tokens"])
 
             if self.args.advantage_estimator == "gspo":
                 raise NotImplementedError("implement GSPO")
