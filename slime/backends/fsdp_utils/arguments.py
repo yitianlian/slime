@@ -38,6 +38,11 @@ class FSDPArgs:
     # YAML bookkeeping
     config: Optional[str] = None
 
+    use_ring_attention: bool = False
+    ring_attention_size: Optional[int] = None
+    ring_attention_impl: str = "auto"
+    ring_attention_variant: str = "standard"
+
 
 def parse_fsdp_cli(extra_args_provider=None):
     parser = argparse.ArgumentParser("FSDP SFT Training (slime)")

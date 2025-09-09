@@ -830,33 +830,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=None,
             )
 
-            # Ring Attention arguments for FSDP backend
-            parser.add_argument(
-                "--use-ring-attention",
-                action="store_true",
-                default=False,
-                help="Enable Ring Attention for long context training (FSDP backend only)",
-            )
-            parser.add_argument(
-                "--ring-attention-size",
-                type=int,
-                default=None,
-                help="Number of devices in the ring for Ring Attention. If None, uses all available ranks.",
-            )
-            parser.add_argument(
-                "--ring-attention-impl",
-                type=str,
-                default="auto",
-                choices=["auto", "builtin", "flash"],
-                help="Ring Attention implementation: auto (prefer flash), builtin (internal), flash (ring-flash-attention library)",
-            )
-            parser.add_argument(
-                "--ring-attention-variant",
-                type=str,
-                default="standard",
-                choices=["standard", "zigzag", "stripe", "llama3"],
-                help="ring-flash-attention variant: standard, zigzag (best performance), stripe, llama3 (for varlen)",
-            )
             return parser
 
         def add_ci_arguments(parser):
