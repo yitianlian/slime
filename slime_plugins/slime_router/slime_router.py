@@ -82,14 +82,7 @@ class SlimeRouter:
             print('input_test:', input_text)
         
         # Get tokens for the input text from radix tree
-        match_result = self.radix_tree.find_longest_prefix(input_text) if input_text else None
-        input_tokens = match_result.token_ids if match_result else []
-        
-        # If tokens are empty and we have input text, use get_token_from_text to tokenize and cache
-        if not input_tokens and input_text:
-            # This will use the radix tree's get_token_from_text method which handles tokenization
-            # and insertion into the tree when a tokenizer is available
-            input_tokens = self.radix_tree.get_token_from_text(input_text)
+        input_tokens = self.radix_tree.get_token_from_text(input_text)
         
         # Forward request to SGLang router
         async with httpx.AsyncClient(timeout=30.0) as client:
