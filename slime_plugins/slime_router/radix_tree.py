@@ -94,7 +94,7 @@ class StringRadixTrie:
     """
 
     def __init__(
-        self, max_cache_size: int = 10000, cleanup_interval: int = 300, enable_auto_cleanup: bool = True, tokenizer=None  # 5 minutes
+        self, max_cache_size: int = 10000, cleanup_interval: int = 300, enable_auto_cleanup: bool = True, tokenizer=None, verbose: bool = False
     ):
         """
         Initialize the String Radix Trie.
@@ -104,11 +104,13 @@ class StringRadixTrie:
             cleanup_interval: Interval in seconds for automatic cleanup
             enable_auto_cleanup: Whether to enable automatic cleanup
             tokenizer: Optional tokenizer for converting text to tokens when not found in cache
+            verbose: Whether to print debug information and tree structure
         """
         self.max_cache_size = max_cache_size
         self.cleanup_interval = cleanup_interval
         self.enable_auto_cleanup = enable_auto_cleanup
         self.tokenizer = tokenizer
+        self.verbose = verbose
 
         # Tree structure
         self.root = StringTreeNode()
@@ -179,7 +181,14 @@ class StringRadixTrie:
             if not matched_tokens:
                 self.cache_misses += 1
 
-            return MatchResult(matched_prefix, matched_tokens, matched_logp, remaining_text, current_node)
+            result = MatchResult(matched_prefix, matched_tokens, matched_logp, remaining_text, current_node)
+            
+            # Print tree structure if verbose is enabled
+            if self.verbose:
+                print("Tree structure after find_longest_prefix:")
+                self.pretty_print()
+                
+            return result
 
     def insert(
         self,
@@ -222,7 +231,14 @@ class StringRadixTrie:
             if logp is None:
                 logp = [0.0] * len(token_ids)
 
-            return self._insert_with_token_splits(text, token_ids, logp, token_split_positions)
+            result = self._insert_with_token_splits(text, token_ids, logp, token_split_positions)
+            
+            # Print tree structure if verbose is enabled
+            if self.verbose:
+                print("Tree structure after insert:")
+                self.pretty_print()
+                
+            return result
 
     def _insert_with_token_splits(
         self, text: str, token_ids: List[int], logp: List[float], token_split_positions: Optional[List[int]] = None
@@ -286,6 +302,12 @@ class StringRadixTrie:
             node = self._find_node_by_text(text)
             if node:
                 removed_count = self._clean_node_subtree(node)
+                
+                # Print tree structure if verbose is enabled
+                if self.verbose:
+                    print("Tree structure after remove:")
+                    self.pretty_print()
+                    
                 return removed_count > 0
             return False
 
@@ -497,7 +519,14 @@ class StringRadixTrie:
             return tokens
             
         # If no tokenizer or other cases, return the matched tokens (could be empty)
-        return result.token_ids if result else []
+        result_tokens = result.token_ids if result else []
+        
+        # Print tree structure if verbose is enabled
+        if self.verbose:
+            print("Tree structure after get_token_from_text:")
+            self.pretty_print()
+            
+        return result_tokens
 
 # Example usage and testing
 if __name__ == "__main__":

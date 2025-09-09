@@ -18,8 +18,23 @@ def run_slime_router(args: argparse.Namespace):
     Args:
         args: Namespace object containing router configuration
     """
-    # Initialize the router
-    slime_router = SlimeRouter(args.sglang_host, args.sglang_port)
+    # Initialize tokenizer if tokenizer name is provided
+    tokenizer = None
+    if args.tokenizer_name:
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
+            if args.verbose:
+                print(f"Loaded tokenizer: {args.tokenizer_name}")
+        except ImportError:
+            if args.verbose:
+                print("Warning: transformers library not found. Tokenizer will not be available.")
+        except Exception as e:
+            if args.verbose:
+                print(f"Warning: Failed to load tokenizer {args.tokenizer_name}: {e}")
+    
+    # Initialize the router with tokenizer
+    slime_router = SlimeRouter(args.sglang_host, args.sglang_port, tokenizer=tokenizer, verbose=args.verbose)
     
     # Start the server
     uvicorn.run(
@@ -31,15 +46,16 @@ def run_slime_router(args: argparse.Namespace):
 
 
 class SlimeRouter:
-    def __init__(self, sglang_host: str, sglang_port: int):
+    def __init__(self, sglang_host: str, sglang_port: int, tokenizer=None, verbose=False):
         """Initialize the SlimeRouter with SGLang router address"""
         self.sglang_host = sglang_host
         self.sglang_port = sglang_port
         self.sglang_router_url = f"http://{sglang_host}:{sglang_port}"
         self.app = FastAPI()
+        self.verbose = verbose
         
-        # Initialize radix tree for caching
-        self.radix_tree = StringRadixTrie(max_cache_size=10000)
+        # Initialize radix tree for caching with tokenizer
+        self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=tokenizer, verbose=verbose)
         
         self._setup_routes()
         
@@ -50,6 +66,9 @@ class SlimeRouter:
         self.app.post("/get_token_from_text")(self.get_token_from_text)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
+
+        if self.verbose:
+            print("set up complete")
         
     async def generate(self, request: Request):
         """Wrapper for SGLang router's /generate endpoint"""
@@ -59,10 +78,18 @@ class SlimeRouter:
         
         # Extract text from payload for radix tree operations
         input_text = payload.get("text", "")
+        if self.verbose:
+            print('input_test:', input_text)
         
         # Get tokens for the input text from radix tree
         match_result = self.radix_tree.find_longest_prefix(input_text) if input_text else None
         input_tokens = match_result.token_ids if match_result else []
+        
+        # If tokens are empty and we have input text, use get_token_from_text to tokenize and cache
+        if not input_tokens and input_text:
+            # This will use the radix tree's get_token_from_text method which handles tokenization
+            # and insertion into the tree when a tokenizer is available
+            input_tokens = self.radix_tree.get_token_from_text(input_text)
         
         # Forward request to SGLang router
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -74,6 +101,10 @@ class SlimeRouter:
                     sglang_payload.pop("text", None)
                     sglang_payload["input_ids"] = input_tokens
                 
+                if self.verbose:
+                    print("=============== Payload: ========================")
+                    print(sglang_payload)
+
                 response = await client.post(
                     f"{self.sglang_router_url}/generate",
                     json=sglang_payload
@@ -93,9 +124,13 @@ class SlimeRouter:
                     if full_text and full_token_ids:
                         # Use default log probabilities (0.0) if not provided
                         self.radix_tree.insert(full_text, full_token_ids)
-                
+                if self.verbose:
+                    print("=============== Response data: ========================")
+                    print(response_data)
                 return response_data
             except Exception as e:
+                if self.verbose:
+                    print(f"Error in generate endpoint: {e}")
                 return JSONResponse(
                     status_code=500,
                     content={"error": str(e)}
@@ -132,6 +167,9 @@ class SlimeRouter:
         body = await request.body()
         headers = dict(request.headers)
         
+        if self.verbose:
+            print(f"Proxying request to: {url}")
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 if request.method == "GET":
@@ -159,6 +197,8 @@ class SlimeRouter:
                     content=content
                 )
             except Exception as e:
+                if self.verbose:
+                    print(f"Error in proxy endpoint: {e}")
                 return JSONResponse(
                     status_code=500,
                     content={"error": str(e)}
@@ -174,6 +214,8 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=30000)
     parser.add_argument("--sglang-host", type=str, required=True)
     parser.add_argument("--sglang-port", type=int, required=True)
+    parser.add_argument("--tokenizer-name", type=str, help="Name of the tokenizer to use for tokenization")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
