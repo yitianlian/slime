@@ -6,7 +6,7 @@ from slime.backends.sglang_utils.arguments import add_sglang_arguments
 from slime.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 
 
-def reset_megatron_args(parser, name, type, default):
+def reset_arg(parser, name, **kwargs):
     """
     Reset the default value of a Megatron argument.
     :param parser: The argument parser.
@@ -15,10 +15,11 @@ def reset_megatron_args(parser, name, type, default):
     """
     for action in parser._actions:
         if name in action.option_strings:
-            action.default = default
+            if "default" in kwargs:
+                action.default = kwargs["default"]
             break
     else:
-        parser.add_argument(name, type=type, default=default)
+        parser.add_argument(name, **kwargs)
 
 
 def get_slime_extra_args_provider(add_custom_arguments=None):
@@ -47,7 +48,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="Number of GPUs per inference engine, just like the tp_size in sglang.",
             )
             parser.add_argument(
-                "--rollout-num-gpus-per-node",
+                "--num-gpus-per-node",
                 type=int,
                 default=8,
                 help=(
@@ -74,8 +75,8 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
-            reset_megatron_args(parser, "--distributed-backend", str, "nccl")
-            reset_megatron_args(parser, "--distributed-timeout-minutes", int, 10)
+            reset_arg(parser, "--distributed-backend", type=str, default="nccl")
+            reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
 
             return parser
 
@@ -378,7 +379,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             # gbs of the training, note that the gbs is of sample, not of prompts,
             # so if you hope to train 1 step for each rollout, the global_bach_size should be set as
             # `rollout_batch_size * n_samples_per_prompt`.
-            reset_megatron_args(parser, "--global-batch-size", int, None)
+            reset_arg(parser, "--global-batch-size", type=int, default=None)
             parser.add_argument(
                 "--num-steps-per-rollout",
                 type=int,
@@ -389,7 +390,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             # mbs for the training, will be ignored if `use_dynamic_batch_size` is set.
-            reset_megatron_args(parser, "--micro-batch-size", int, 1)
+            reset_arg(parser, "--micro-batch-size", type=int, default=1)
             parser.add_argument(
                 "--balance-data",
                 action="store_true",
@@ -445,7 +446,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             )
 
             # change the default value of eval_interval from Megatron to None
-            reset_megatron_args(parser, "--eval-interval", int, None)
+            reset_arg(parser, "--eval-interval", type=int, default=None)
 
             parser.add_argument(
                 "--eval-prompt-data",
@@ -490,10 +491,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for reference model. "
             )
-            reset_megatron_args(parser, "--load", str, None)
-            reset_megatron_args(parser, "--save", str, None)
-            reset_megatron_args(parser, "--save-interval", int, None)
-            reset_megatron_args(parser, "--seed", int, 1234)
+            reset_arg(parser, "--load", type=str, default=None)
+            reset_arg(parser, "--save", type=str, default=None)
+            reset_arg(parser, "--save-interval", type=int, default=None)
+            reset_arg(parser, "--seed", type=int, default=1234)
+            reset_arg(parser, "--clip-grad", type=float, default=1.0)
+            reset_arg(parser, "--calculate-per-token-loss", action="store_true")
 
             parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
             parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
@@ -626,7 +629,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-host", type=str, default=None)
             parser.add_argument("--wandb-team", type=str, default=None)
             parser.add_argument("--wandb-group", type=str, default=None)
-            reset_megatron_args(parser, "--wandb-project", str, None)
+            reset_arg(parser, "--wandb-project", type=str, default=None)
             parser.add_argument(
                 "--disable-wandb-random-suffix",
                 action="store_false",
@@ -867,6 +870,15 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
     return add_slime_arguments
 
 
+def warning_for_unfinished_backend(backend: str):
+    print("⚠️ " * 50)
+    print(
+        f"⚠️  SLIME_BACKEND {backend} is experimental and not yet verified.\n"
+        "⚠️  Please avoid using it unless you are actively developing it."
+    )
+    print("⚠️ " * 50)
+
+
 def parse_args(add_custom_arguments=None):
     add_slime_arguments = get_slime_extra_args_provider(add_custom_arguments)
 
@@ -884,13 +896,15 @@ def parse_args(add_custom_arguments=None):
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
+    elif backend == "xtuner":
+        warning_for_unfinished_backend(backend)
+        from slime.backends.xtuner_utils.arguments import parse_args as xtuner_parse_args
+
+        args = xtuner_parse_args(add_slime_arguments)
+        args.rank = 0
+        args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     else:
-        print("⚠️ " * 50)
-        print(
-            f"⚠️  SLIME_BACKEND {backend} is experimental and not yet verified.\n"
-            "⚠️  Please avoid using it unless you are actively developing it."
-        )
-        print("⚠️ " * 50)
+        warning_for_unfinished_backend(backend)
         from slime.backends.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_slime_arguments)
@@ -925,6 +939,9 @@ def parse_args(add_custom_arguments=None):
             print(f"[legacy] only one eval_prompt_data detected, will assume it is data for aime")
             args.eval_prompt_data = ["aime", args.eval_prompt_data[0]]
         assert len(args.eval_prompt_data) % 2 == 0, "eval prompt data will need to be in pairs"
+
+    if args.save_interval is not None:
+        assert args.save is not None, "'--save' is required when save_interval is set."
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
