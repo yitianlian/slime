@@ -211,10 +211,18 @@ class StringRadixTrie:
         """
         with self._lock:
             if not text or not token_ids:
+                if self.verbose:
+                    print("[RadixTree] Insertion failed: text or token_ids is empty")
                 return False
 
             # Validate logp consistency
             if logp is not None and len(logp) != len(token_ids):
+                if self.verbose:
+                    print(
+                        f"[WARNING] Logp length {len(logp)} does not match token length {len(token_ids)} for text: {text}"
+                    )
+                    print(f"[WARNING] Logp: {logp}")
+                    print(f"[WARNING] Token IDs: {token_ids}")
                 return False
 
             # Validate split positions if provided
@@ -225,6 +233,8 @@ class StringRadixTrie:
                     or any(pos <= 0 for pos in token_split_positions)
                     or token_split_positions != sorted(token_split_positions)
                 ):
+                    if self.verbose:
+                        print("Invalid token split positions")
                     return False
 
             # If logp is not provided, create default values (0.0)
@@ -490,22 +500,27 @@ class StringRadixTrie:
         """Cleanup when object is destroyed."""
         self.stop_cleanup_timer()
 
-    def get_token_from_text(self, text: str) -> List[int]:
+    def retrieve_from_text(self, text: str, return_logp: bool = False):
         """
         Get tokens from text by looking up in radix tree or using tokenizer.
         
         Args:
             text: Input text to get tokens for
+            return_logp: If True, also return log probabilities
             
         Returns:
-            List of token IDs corresponding to the input text
+            List of token IDs corresponding to the input text if return_logp is False.
+            Tuple of (token_ids, logp) if return_logp is True.
         """
         # Call find_longest_prefix to get the match result
         result = self.find_longest_prefix(text)
         
         # If we have a match and it covers the entire text, return the tokens
         if result.matched_prefix and result.token_ids:
-            return result.token_ids
+            if return_logp:
+                return (result.token_ids, result.logp)
+            else:
+                return result.token_ids
             
         # If result is empty and input text is not empty, tokenize with tokenizer
         # This is needed because we cannot get the prompt token id from engine response
@@ -516,17 +531,25 @@ class StringRadixTrie:
             # Insert the text and tokens into the tree
             self.insert(text, tokens)
             # Return the tokens
-            return tokens
+            if return_logp:
+                # Return default logp values (0.0) when using tokenizer
+                return (tokens, [0.0] * len(tokens))
+            else:
+                return tokens
             
         # If no tokenizer or other cases, return the matched tokens (could be empty)
         result_tokens = result.token_ids if result else []
+        result_logp = result.logp if result else []
         
         # Print tree structure if verbose is enabled
         if self.verbose:
             print("Tree structure after get_token_from_text:")
             self.pretty_print()
             
-        return result_tokens
+        if return_logp:
+            return (result_tokens, result_logp)
+        else:
+            return result_tokens
 
 # Example usage and testing
 if __name__ == "__main__":

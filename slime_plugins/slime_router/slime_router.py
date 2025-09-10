@@ -1,9 +1,11 @@
 import asyncio
 import json
 from typing import Dict, Any, Optional, List
+from datamodel_code_generator import generate
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from numpy import full
 import uvicorn
 import argparse
 
@@ -63,7 +65,7 @@ class SlimeRouter:
         """Setup all the HTTP routes"""
         # IMPORTANT: Register specific routes BEFORE the catch-all route
         self.app.post("/generate")(self.generate)
-        self.app.post("/get_token_from_text")(self.get_token_from_text)
+        self.app.post("/retrieve_from_text")(self.retrieve_from_text)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
@@ -82,7 +84,7 @@ class SlimeRouter:
             print('input_test:', input_text)
         
         # Get tokens for the input text from radix tree
-        input_tokens = self.radix_tree.get_token_from_text(input_text)
+        input_tokens, input_logprobs = self.radix_tree.retrieve_from_text(input_text, return_logp=True)
         
         # Forward request to SGLang router
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -103,6 +105,10 @@ class SlimeRouter:
                     json=sglang_payload
                 )
                 response_data = response.json()
+
+                if self.verbose:
+                    print("=============== Response data: ========================")
+                    print(response_data)
                 
                 # Extract data for radix tree insertion
                 if "text" in response_data and "output_ids" in response_data:
@@ -111,15 +117,22 @@ class SlimeRouter:
                     
                     # Combine input tokens and generated tokens
                     full_text = input_text + generated_text
-                    full_token_ids = input_tokens + generated_token_ids
-                    
+
+                    # sglang will return the input token ids as well
+                    full_token_ids = generated_token_ids
+
                     # Insert the full trajectory into radix tree
                     if full_text and full_token_ids:
-                        # Use default log probabilities (0.0) if not provided
-                        self.radix_tree.insert(full_text, full_token_ids)
-                if self.verbose:
-                    print("=============== Response data: ========================")
-                    print(response_data)
+                        if "output_token_logprobs" in response_data.get("meta_info", {}):
+                            print("============ logprobs ==============")
+                            generated_token_logprobs = [item[0] for item in response_data["meta_info"]["output_token_logprobs"]]
+                            full_logprobs = input_logprobs + generated_token_logprobs
+                            print(full_logprobs)
+                            self.radix_tree.insert(full_text, full_token_ids, full_logprobs)
+                        else:
+                            # Use default log probabilities (0.0) if not provided
+                            self.radix_tree.insert(full_text, full_token_ids)
+
                 return response_data
             except Exception as e:
                 if self.verbose:
@@ -129,15 +142,23 @@ class SlimeRouter:
                     content={"error": str(e)}
                 )
     
-    async def get_token_from_text(self, request: Request):
+    async def retrieve_from_text(self, request: Request):
         """Get token information from text input"""
         body = await request.body()
         payload = json.loads(body) if body else {}
         
         text = payload.get("text", "")
+        return_logp = payload.get("return_logp", False)
         
-        # Use radix tree's get_token_from_text method
-        token_ids = self.radix_tree.get_token_from_text(text)
+        # Use radix tree's retrieve_from_text method
+        result = self.radix_tree.retrieve_from_text(text, return_logp=return_logp)
+        
+        # Handle the result based on whether logp was requested
+        if return_logp:
+            token_ids, logp = result
+        else:
+            token_ids = result
+            logp = None
         
         # This is a simplified implementation. In a real scenario, you would
         # use a tokenizer to convert text to tokens.
@@ -149,6 +170,10 @@ class SlimeRouter:
             "loss_mask": []  # Loss mask for the tokens
         }
         
+        # Add logp to response if requested
+        if return_logp and logp is not None:
+            result["logp"] = logp
+            
         return result
     
     async def proxy(self, request: Request, path: str):
