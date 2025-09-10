@@ -53,6 +53,8 @@ def parse_fsdp_cli(extra_args_provider=None):
         arg_type = f.type if f.type != Optional[str] else str
         if arg_type is bool:
             parser.add_argument(f"--{f.name.replace('_', '-')}", action="store_true")
+        elif f.type == Optional[int]:
+            parser.add_argument(f"--{f.name.replace('_', '-')}", type=int, default=f.default)
         else:
             parser.add_argument(f"--{f.name.replace('_', '-')}", type=arg_type, default=f.default)
 
