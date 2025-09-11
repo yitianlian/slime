@@ -1,3 +1,5 @@
+
+
 from __future__ import annotations
 
 """
@@ -7,6 +9,7 @@ Optimized for string prefixes with corresponding token IDs.
 
 import time
 import threading
+import requests
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
@@ -94,7 +97,7 @@ class StringRadixTrie:
     """
 
     def __init__(
-        self, max_cache_size: int = 10000, cleanup_interval: int = 300, enable_auto_cleanup: bool = True, tokenizer=None, verbose: bool = False
+        self, max_cache_size: int = 10000, cleanup_interval: int = 300, enable_auto_cleanup: bool = True, tokenizer=None, verbose: bool = False, router_url: str = None
     ):
         """
         Initialize the String Radix Trie.
@@ -105,12 +108,14 @@ class StringRadixTrie:
             enable_auto_cleanup: Whether to enable automatic cleanup
             tokenizer: Optional tokenizer for converting text to tokens when not found in cache
             verbose: Whether to print debug information and tree structure
+            router_url: URL of the SGL router to fetch worker list from (e.g., "http://localhost:30004")
         """
         self.max_cache_size = max_cache_size
         self.cleanup_interval = cleanup_interval
         self.enable_auto_cleanup = enable_auto_cleanup
         self.tokenizer = tokenizer
         self.verbose = verbose
+        self.router_url = router_url
 
         # Tree structure
         self.root = StringTreeNode()
@@ -122,13 +127,119 @@ class StringRadixTrie:
         self.cache_hits = 0
         self.cache_misses = 0
 
+        # Router worker information
+        self.worker_urls = []
+        self.max_weight_version = None
+        
         # Thread safety
         self._lock = threading.RLock()
+
+        # Fetch worker list from router during initialization
+        self._fetch_worker_list()
 
         # Cleanup timer
         self._cleanup_timer = None
         if self.enable_auto_cleanup:
+
+            
             self._start_cleanup_timer()
+
+    def _fetch_worker_list(self):
+        """
+        Fetch worker list from the router during initialization.
+        This method is called during __init__ to populate worker information.
+        """
+        if not self.router_url:
+            if self.verbose:
+                print("[RadixTree] No router URL provided, skipping worker list fetch")
+            return
+            
+        try:
+            # Fetch worker URLs
+            list_workers_url = f"{self.router_url}/list_workers"
+            if self.verbose:
+                print(f"[RadixTree] Fetching worker list from: {list_workers_url}")
+                
+            response = requests.get(list_workers_url, timeout=5)
+            response.raise_for_status()
+            
+            worker_data = response.json()
+            self.worker_urls = worker_data.get("urls", [])
+            
+            if self.verbose:
+                print(f"[RadixTree] Successfully fetched {len(self.worker_urls)} workers: {self.worker_urls}")
+                
+        except requests.exceptions.RequestException as e:
+            if self.verbose:
+                print(f"[RadixTree] Failed to fetch worker information from router: {e}")
+            # Keep empty list if fetch fails
+            self.worker_urls = []
+        except Exception as e:
+            if self.verbose:
+                print(f"[RadixTree] Unexpected error while fetching worker information: {e}")
+            self.worker_urls = []
+
+    def get_worker_info(self) -> Dict[str, Any]:
+        """
+        Get the cached worker information.
+        
+        Returns:
+            Dictionary containing worker URLs and max weight version
+        """
+        with self._lock:
+            return {
+                "worker_urls": self.worker_urls.copy(),
+                "total_workers": len(self.worker_urls),
+                "max_weight_version": self.max_weight_version
+            }
+
+    def refresh_worker_list(self):
+        """
+        Manually refresh the worker list from the router.
+        This can be called to update worker information after initialization.
+        """
+        with self._lock:
+            self._fetch_worker_list()
+
+    def _fetch_weight_version(self):
+        """
+        Fetch weight version from the first available worker and update max_weight_version.
+        This method is called during generate operations.
+        """
+        if not self.worker_urls:
+            if self.verbose:
+                print("[RadixTree] No workers available to fetch weight version")
+            return
+            
+        # Use the first worker
+        worker_url = self.worker_urls[0]
+        
+        try:
+            get_weight_version_url = f"{worker_url}/get_weight_version"
+            if self.verbose:
+                print(f"[RadixTree] Fetching weight version from: {get_weight_version_url}")
+                
+            response = requests.get(get_weight_version_url, timeout=5)
+            response.raise_for_status()
+            
+            version_data = response.json()
+            current_weight_version = version_data.get("weight_version")
+            
+            if current_weight_version is not None:
+                # Update max_weight_version
+                if self.max_weight_version is None or current_weight_version > self.max_weight_version:
+                    self.max_weight_version = current_weight_version
+                    if self.verbose:
+                        print(f"[RadixTree] Updated max weight version to: {self.max_weight_version}")
+                elif self.verbose:
+                    print(f"[RadixTree] Current weight version {current_weight_version} <= max {self.max_weight_version}")
+            
+        except requests.exceptions.RequestException as e:
+            if self.verbose:
+                print(f"[RadixTree] Failed to fetch weight version from worker: {e}")
+        except Exception as e:
+            if self.verbose:
+                print(f"[RadixTree] Unexpected error while fetching weight version: {e}")
 
     def find_longest_prefix(self, text: str) -> MatchResult:
         """
@@ -447,7 +558,7 @@ class StringRadixTrie:
             self._cleanup_timer = None
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get cache statistics."""
+        """Get cache statistics including worker information."""
         with self._lock:
             total_requests = self.cache_hits + self.cache_misses
             hit_rate = self.cache_hits / total_requests if total_requests > 0 else 0
@@ -458,6 +569,9 @@ class StringRadixTrie:
                 "cache_misses": self.cache_misses,
                 "hit_rate": hit_rate,
                 "max_cache_size": self.max_cache_size,
+                "total_workers": len(self.worker_urls),
+                "worker_urls": self.worker_urls,
+                "max_weight_version": self.max_weight_version,
             }
 
     def clear(self):
@@ -503,6 +617,7 @@ class StringRadixTrie:
     def retrieve_from_text(self, text: str, return_logp: bool = False):
         """
         Get tokens from text by looking up in radix tree or using tokenizer.
+        Also fetches weight version from worker during this operation.
         
         Args:
             text: Input text to get tokens for
@@ -512,6 +627,8 @@ class StringRadixTrie:
             List of token IDs corresponding to the input text if return_logp is False.
             Tuple of (token_ids, logp) if return_logp is True.
         """
+        # Fetch weight version from worker during generate operation
+        self._fetch_weight_version()
         # Call find_longest_prefix to get the match result
         result = self.find_longest_prefix(text)
         
@@ -553,8 +670,24 @@ class StringRadixTrie:
 
 # Example usage and testing
 if __name__ == "__main__":
-    # Create trie instance
-    trie = StringRadixTrie(max_cache_size=100)
+    # Create trie instance with router URL for testing
+    trie = StringRadixTrie(max_cache_size=100, verbose=True, router_url="http://localhost:30004")
+
+    # Show worker information fetched during initialization
+    print("\nWorker information fetched from router:")
+    worker_info = trie.get_worker_info()
+    print(f"Total workers: {worker_info['total_workers']}")
+    print(f"Worker URLs: {worker_info['worker_urls']}")
+    print(f"Max weight version: {worker_info['max_weight_version']}")
+    
+    # Test weight version fetching during generate operation
+    print("\nTesting weight version fetching during generate operation:")
+    test_tokens = trie.retrieve_from_text("Hello world")
+    print(f"Tokens for 'Hello world': {test_tokens}")
+    
+    # Check updated weight version
+    updated_info = trie.get_worker_info()
+    print(f"Max weight version after generate: {updated_info['max_weight_version']}")
 
     # Example usage with simplified insert
     test_cases = [
