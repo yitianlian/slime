@@ -94,28 +94,23 @@ class StringRadixTrie:
     Features:
     - Efficient string prefix matching
     - Token ID caching for matched prefixes
-    - LRU-based eviction for memory management
     - Thread-safe operations
-    - Automatic cleanup of stale entries
+    - Weight version tracking
     """
 
     def __init__(
-        self, max_cache_size: int = 10000, cleanup_interval: int = 300, enable_auto_cleanup: bool = True, tokenizer=None, verbose: bool = False, router_url: str = None
+        self, max_cache_size: int = 10000, tokenizer=None, verbose: bool = False, router_url: str = None
     ):
         """
         Initialize the String Radix Trie.
 
         Args:
             max_cache_size: Maximum number of cached entries
-            cleanup_interval: Interval in seconds for automatic cleanup
-            enable_auto_cleanup: Whether to enable automatic cleanup
             tokenizer: Optional tokenizer for converting text to tokens when not found in cache
             verbose: Whether to print debug information and tree structure
             router_url: URL of the SGL router to fetch worker list from (e.g., "http://localhost:30004")
         """
         self.max_cache_size = max_cache_size
-        self.cleanup_interval = cleanup_interval
-        self.enable_auto_cleanup = enable_auto_cleanup
         self.tokenizer = tokenizer
         self.verbose = verbose
         self.router_url = router_url
@@ -139,13 +134,6 @@ class StringRadixTrie:
 
         # Fetch worker list from router during initialization
         self._fetch_worker_list()
-
-        # Cleanup timer
-        self._cleanup_timer = None
-        if self.enable_auto_cleanup:
-
-            
-            self._start_cleanup_timer()
 
     def _fetch_worker_list(self):
         """
@@ -560,19 +548,6 @@ class StringRadixTrie:
             return True
         return False
 
-    def _start_cleanup_timer(self):
-        """Start the automatic cleanup timer."""
-        self.cleanup_stale_entries()
-        if self.enable_auto_cleanup:
-            self._cleanup_timer = threading.Timer(self.cleanup_interval, self._start_cleanup_timer)
-            self._cleanup_timer.daemon = True
-            self._cleanup_timer.start()
-
-    def stop_cleanup_timer(self):
-        """Stop the automatic cleanup timer."""
-        if self._cleanup_timer:
-            self._cleanup_timer.cancel()
-            self._cleanup_timer = None
 
     def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics including worker information."""
@@ -627,9 +602,6 @@ class StringRadixTrie:
         for child in node.children:
             self._print_node(child, depth + 1)
 
-    def __del__(self):
-        """Cleanup when object is destroyed."""
-        self.stop_cleanup_timer()
 
     def retrieve_from_text(self, text: str, return_logp: bool = False):
         """
@@ -756,5 +728,3 @@ if __name__ == "__main__":
     for key, value in stats.items():
         print(f"{key}: {value}")
 
-    # Cleanup
-    trie.stop_cleanup_timer()
