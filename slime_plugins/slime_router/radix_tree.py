@@ -96,21 +96,24 @@ class StringRadixTrie:
     - Token ID caching for matched prefixes
     - Thread-safe operations
     - Weight version tracking
+    - Automatic garbage collection based on weight version thresholds
     """
 
     def __init__(
-        self, max_cache_size: int = 10000, tokenizer=None, verbose: bool = False, router_url: str = None
+        self, max_cache_size: int = 10000, gc_threshold_k: int = 5, tokenizer=None, verbose: bool = False, router_url: str = None
     ):
         """
         Initialize the String Radix Trie.
 
         Args:
-            max_cache_size: Maximum number of cached entries
+            max_cache_size: Maximum number of cached token IDs (triggers GC when exceeded)
+            gc_threshold_k: GC threshold - nodes with weight_version < (current_version - k) will be removed
             tokenizer: Optional tokenizer for converting text to tokens when not found in cache
             verbose: Whether to print debug information and tree structure
             router_url: URL of the SGL router to fetch worker list from (e.g., "http://localhost:30004")
         """
         self.max_cache_size = max_cache_size
+        self.gc_threshold_k = gc_threshold_k
         self.tokenizer = tokenizer
         self.verbose = verbose
         self.router_url = router_url
@@ -124,6 +127,7 @@ class StringRadixTrie:
         self.total_entries = 0
         self.cache_hits = 0
         self.cache_misses = 0
+        self.cur_cache_size = 0  # Total number of token IDs across all nodes
 
         # Router worker information
         self.worker_urls = []
@@ -349,6 +353,14 @@ class StringRadixTrie:
 
             result = self._insert_with_token_splits(text, token_ids, logp, token_split_positions, current_weight_version)
             
+            # Check if GC should be triggered after insert
+            if self.cur_cache_size > self.max_cache_size:
+                if self.verbose:
+                    print(f"[RadixTree] Cache size {self.cur_cache_size} exceeds limit {self.max_cache_size}, triggering GC")
+                gc_removed = self.gc_by_weight_version()
+                if self.verbose:
+                    print(f"[RadixTree] GC removed {gc_removed} nodes, new cache size: {self.cur_cache_size}")
+            
             # Print tree structure if verbose is enabled
             if self.verbose:
                 print("Tree structure after insert:")
@@ -401,6 +413,8 @@ class StringRadixTrie:
                     new_node.token_ids = remaining_tokens
                     new_node.logp = remaining_logp
                     new_node.touch()
+                    # Increment cache size by number of tokens added
+                    self.cur_cache_size += len(remaining_tokens)
 
                 current_node.children.append(new_node)  # Add to children list
                 traversed_nodes.append(new_node)  # Track new node
@@ -529,9 +543,11 @@ class StringRadixTrie:
         for child in list(node.children):  # Create a copy to avoid modification during iteration
             removed_count += self._remove_node_and_descendants(child)
 
-        # Count this node if it has data
+        # Count this node if it has data and decrement cache size
         if node.has_value:
             removed_count += 1
+            # Decrement cache size by number of tokens removed
+            self.cur_cache_size -= len(node.token_ids)
 
         # Remove this node from its parent
         if self._remove_node_from_parent(node):
@@ -548,6 +564,91 @@ class StringRadixTrie:
             return True
         return False
 
+    def gc_by_weight_version(self) -> int:
+        """
+        Perform garbage collection based on weight version.
+        Remove nodes with weight_version < (max_weight_version - gc_threshold_k).
+        
+        Returns:
+            Number of nodes removed
+        """
+        with self._lock:
+            if self.max_weight_version is None:
+                if self.verbose:
+                    print("[RadixTree GC] No weight version available, skipping GC")
+                return 0
+                
+            gc_threshold = self.max_weight_version - self.gc_threshold_k
+            if self.verbose:
+                print(f"[RadixTree GC] Starting GC with threshold: {gc_threshold} (max_version: {self.max_weight_version}, k: {self.gc_threshold_k})")
+            
+            nodes_to_remove = self._find_outdated_nodes(gc_threshold)
+            removed_count = 0
+            
+            for node in nodes_to_remove:
+                # Validate that subtree weight versions are <= parent weight version
+                self._validate_subtree_weight_versions(node)
+                removed_count += self._clean_node_subtree(node)
+                
+            if self.verbose:
+                print(f"[RadixTree GC] Completed GC, removed {removed_count} nodes")
+                
+            return removed_count
+
+    def _find_outdated_nodes(self, gc_threshold: int) -> List[StringTreeNode]:
+        """
+        Find nodes that should be removed based on weight version threshold.
+        Uses layer-by-layer traversal - if parent is outdated, children are not checked.
+        
+        Args:
+            gc_threshold: Weight version threshold (nodes < this value will be removed)
+            
+        Returns:
+            List of nodes to remove
+        """
+        outdated_nodes = []
+        
+        def check_node(node):
+            if node == self.root:
+                # Root is never removed, check its children
+                for child in node.children:
+                    check_node(child)
+                return
+                
+            # Check if this node should be removed
+            if (node.weight_version is not None and 
+                node.weight_version < gc_threshold and 
+                node.has_value):
+                outdated_nodes.append(node)
+                return  # Don't check children since entire subtree will be removed
+                
+            # Node is not outdated, check its children
+            for child in node.children:
+                check_node(child)
+                
+        check_node(self.root)
+        return outdated_nodes
+
+    def _validate_subtree_weight_versions(self, node: StringTreeNode):
+        """
+        Validate that all nodes in subtree have weight_version <= parent weight_version.
+        
+        Args:
+            node: Root node of subtree to validate
+        """
+        def validate_recursive(current_node, parent_weight_version):
+            if current_node.weight_version is not None and parent_weight_version is not None:
+                assert current_node.weight_version <= parent_weight_version, (
+                    f"Child node weight_version {current_node.weight_version} > "
+                    f"parent weight_version {parent_weight_version}"
+                )
+            
+            # Recursively validate children
+            for child in current_node.children:
+                validate_recursive(child, current_node.weight_version)
+                
+        # Start validation from the node itself
+        validate_recursive(node, node.weight_version)
 
     def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics including worker information."""
@@ -561,6 +662,8 @@ class StringRadixTrie:
                 "cache_misses": self.cache_misses,
                 "hit_rate": hit_rate,
                 "max_cache_size": self.max_cache_size,
+                "cur_cache_size": self.cur_cache_size,
+                "gc_threshold_k": self.gc_threshold_k,
                 "total_workers": len(self.worker_urls),
                 "worker_urls": self.worker_urls,
                 "max_weight_version": self.max_weight_version,
@@ -575,6 +678,7 @@ class StringRadixTrie:
             self.total_entries = 0
             self.cache_hits = 0
             self.cache_misses = 0
+            self.cur_cache_size = 0
 
     def pretty_print(self):
         """Print the trie structure in a readable format."""
