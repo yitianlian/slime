@@ -46,6 +46,9 @@ class StringTreeNode:
 
         # Reference counting for protection from eviction
         self.ref_count = 0
+        
+        # Weight version tracking
+        self.weight_version: Optional[int] = None  # Weight version for this node
 
         # Node identification
         self.id = StringTreeNode.counter if node_id is None else node_id
@@ -326,6 +329,10 @@ class StringRadixTrie:
                     print("[RadixTree] Insertion failed: text or token_ids is empty")
                 return False
 
+            # Get weight version at the start of insert operation
+            self._fetch_weight_version()
+            current_weight_version = self.max_weight_version
+
             # Validate logp consistency
             if logp is not None and len(logp) != len(token_ids):
                 if self.verbose:
@@ -352,7 +359,7 @@ class StringRadixTrie:
             if logp is None:
                 logp = [0.0] * len(token_ids)
 
-            result = self._insert_with_token_splits(text, token_ids, logp, token_split_positions)
+            result = self._insert_with_token_splits(text, token_ids, logp, token_split_positions, current_weight_version)
             
             # Print tree structure if verbose is enabled
             if self.verbose:
@@ -362,7 +369,7 @@ class StringRadixTrie:
             return result
 
     def _insert_with_token_splits(
-        self, text: str, token_ids: List[int], logp: List[float], token_split_positions: Optional[List[int]] = None
+        self, text: str, token_ids: List[int], logp: List[float], token_split_positions: Optional[List[int]] = None, weight_version: Optional[int] = None
     ) -> bool:
         """Insert with token splitting - cut tokens based on existing node lengths."""
 
@@ -370,6 +377,9 @@ class StringRadixTrie:
         remaining_text = text
         remaining_tokens = token_ids.copy()
         remaining_logp = logp.copy()
+        
+        # Track all nodes traversed during insert for weight version update
+        traversed_nodes = [current_node]
 
         while remaining_text:
             # Find best startswith match
@@ -390,6 +400,7 @@ class StringRadixTrie:
                     remaining_logp = remaining_logp[node_token_len:]
 
                 current_node = best_child
+                traversed_nodes.append(current_node)  # Track traversed node
                 remaining_text = remaining_text[best_key_len:]
             else:
                 # Create new node with all remaining tokens
@@ -404,8 +415,14 @@ class StringRadixTrie:
                     new_node.touch()
 
                 current_node.children.append(new_node)  # Add to children list
+                traversed_nodes.append(new_node)  # Track new node
                 self.total_entries += 1
                 break
+
+        # Update weight version for all traversed nodes
+        if weight_version is not None:
+            for node in traversed_nodes:
+                node.weight_version = weight_version
 
         return True
 
