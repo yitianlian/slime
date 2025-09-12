@@ -9,7 +9,6 @@ Optimized for string prefixes with corresponding token IDs.
 
 import time
 import threading
-import requests
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
@@ -100,7 +99,7 @@ class StringRadixTrie:
     """
 
     def __init__(
-        self, max_cache_size: int = 10000, gc_threshold_k: int = 5, tokenizer=None, verbose: bool = False, router_url: str = None
+        self, max_cache_size: int = 10000, gc_threshold_k: int = 5, tokenizer=None, verbose: bool = False
     ):
         """
         Initialize the String Radix Trie.
@@ -110,13 +109,11 @@ class StringRadixTrie:
             gc_threshold_k: GC threshold - nodes with weight_version < (current_version - k) will be removed
             tokenizer: Optional tokenizer for converting text to tokens when not found in cache
             verbose: Whether to print debug information and tree structure
-            router_url: URL of the SGL router to fetch worker list from (e.g., "http://localhost:30004")
         """
         self.max_cache_size = max_cache_size
         self.gc_threshold_k = gc_threshold_k
         self.tokenizer = tokenizer
         self.verbose = verbose
-        self.router_url = router_url
 
         # Tree structure
         self.root = StringTreeNode()
@@ -128,113 +125,10 @@ class StringRadixTrie:
         self.cache_hits = 0
         self.cache_misses = 0
         self.cur_cache_size = 0  # Total number of token IDs across all nodes
-
-        # Router worker information
-        self.worker_urls = []
-        self.max_weight_version = None
         
         # Thread safety
         self._lock = threading.RLock()
 
-        # Fetch worker list from router during initialization
-        self._fetch_worker_list()
-
-    def _fetch_worker_list(self):
-        """
-        Fetch worker list from the router during initialization.
-        This method is called during __init__ to populate worker information.
-        """
-        if not self.router_url:
-            if self.verbose:
-                print("[RadixTree] No router URL provided, skipping worker list fetch")
-            return
-            
-        try:
-            # Fetch worker URLs
-            list_workers_url = f"{self.router_url}/list_workers"
-            if self.verbose:
-                print(f"[RadixTree] Fetching worker list from: {list_workers_url}")
-                
-            response = requests.get(list_workers_url, timeout=5)
-            response.raise_for_status()
-            
-            worker_data = response.json()
-            self.worker_urls = worker_data.get("urls", [])
-            
-            if self.verbose:
-                print(f"[RadixTree] Successfully fetched {len(self.worker_urls)} workers: {self.worker_urls}")
-                
-        except requests.exceptions.RequestException as e:
-            if self.verbose:
-                print(f"[RadixTree] Failed to fetch worker information from router: {e}")
-            # Keep empty list if fetch fails
-            self.worker_urls = []
-        except Exception as e:
-            if self.verbose:
-                print(f"[RadixTree] Unexpected error while fetching worker information: {e}")
-            self.worker_urls = []
-
-    def get_worker_info(self) -> Dict[str, Any]:
-        """
-        Get the cached worker information.
-        
-        Returns:
-            Dictionary containing worker URLs and max weight version
-        """
-        with self._lock:
-            return {
-                "worker_urls": self.worker_urls.copy(),
-                "total_workers": len(self.worker_urls),
-                "max_weight_version": self.max_weight_version
-            }
-
-    def refresh_worker_list(self):
-        """
-        Manually refresh the worker list from the router.
-        This can be called to update worker information after initialization.
-        """
-        with self._lock:
-            self._fetch_worker_list()
-
-    def _fetch_weight_version(self):
-        """
-        Fetch weight version from the first available worker and update max_weight_version.
-        This method is called during generate operations.
-        """
-        if not self.worker_urls:
-            if self.verbose:
-                print("[RadixTree] No workers available to fetch weight version")
-            return
-            
-        # Use the first worker
-        worker_url = self.worker_urls[0]
-        
-        try:
-            get_weight_version_url = f"{worker_url}/get_weight_version"
-            if self.verbose:
-                print(f"[RadixTree] Fetching weight version from: {get_weight_version_url}")
-                
-            response = requests.get(get_weight_version_url, timeout=5)
-            response.raise_for_status()
-            
-            version_data = response.json()
-            current_weight_version = version_data.get("weight_version")
-            
-            if current_weight_version is not None:
-                # Update max_weight_version
-                if self.max_weight_version is None or current_weight_version > self.max_weight_version:
-                    self.max_weight_version = current_weight_version
-                    if self.verbose:
-                        print(f"[RadixTree] Updated max weight version to: {self.max_weight_version}")
-                elif self.verbose:
-                    print(f"[RadixTree] Current weight version {current_weight_version} <= max {self.max_weight_version}")
-            
-        except requests.exceptions.RequestException as e:
-            if self.verbose:
-                print(f"[RadixTree] Failed to fetch weight version from worker: {e}")
-        except Exception as e:
-            if self.verbose:
-                print(f"[RadixTree] Unexpected error while fetching weight version: {e}")
 
     def find_longest_prefix(self, text: str) -> MatchResult:
         """
@@ -301,7 +195,7 @@ class StringRadixTrie:
         text: str,
         token_ids: List[int],
         logp: Optional[List[float]] = None,
-        token_split_positions: Optional[List[int]] = None,
+        weight_version: Optional[int] = None,
     ) -> bool:
         """
         Insert a string and its corresponding token IDs and log probabilities into the trie.
@@ -310,7 +204,7 @@ class StringRadixTrie:
             text: String to insert
             token_ids: Corresponding token IDs
             logp: Corresponding log probabilities (must match token_ids length)
-            token_split_positions: Optional character positions where each token ends
+            weight_version: Optional weight version for this insertion
 
         Returns:
             True if insertion was successful
@@ -321,9 +215,8 @@ class StringRadixTrie:
                     print("[RadixTree] Insertion failed: text or token_ids is empty")
                 return False
 
-            # Get weight version at the start of insert operation
-            self._fetch_weight_version()
-            current_weight_version = self.max_weight_version
+            # Use provided weight version
+            current_weight_version = weight_version
 
             # Validate logp consistency
             if logp is not None and len(logp) != len(token_ids):
@@ -335,29 +228,18 @@ class StringRadixTrie:
                     print(f"[WARNING] Token IDs: {token_ids}")
                 return False
 
-            # Validate split positions if provided
-            if token_split_positions is not None:
-                if (
-                    len(token_split_positions) != len(token_ids)
-                    or token_split_positions[-1] > len(text)
-                    or any(pos <= 0 for pos in token_split_positions)
-                    or token_split_positions != sorted(token_split_positions)
-                ):
-                    if self.verbose:
-                        print("Invalid token split positions")
-                    return False
 
             # If logp is not provided, create default values (0.0)
             if logp is None:
                 logp = [0.0] * len(token_ids)
 
-            result = self._insert_with_token_splits(text, token_ids, logp, token_split_positions, current_weight_version)
+            result = self._insert(text, token_ids, logp, current_weight_version)
             
             # Check if GC should be triggered after insert
-            if self.cur_cache_size > self.max_cache_size:
+            if self.cur_cache_size > self.max_cache_size and weight_version is not None:
                 if self.verbose:
                     print(f"[RadixTree] Cache size {self.cur_cache_size} exceeds limit {self.max_cache_size}, triggering GC")
-                gc_removed = self.gc_by_weight_version()
+                gc_removed = self.gc_by_weight_version(weight_version)
                 if self.verbose:
                     print(f"[RadixTree] GC removed {gc_removed} nodes, new cache size: {self.cur_cache_size}")
             
@@ -368,15 +250,13 @@ class StringRadixTrie:
                 
             return result
 
-    def _insert_with_token_splits(
-        self, text: str, token_ids: List[int], logp: List[float], token_split_positions: Optional[List[int]] = None, weight_version: Optional[int] = None
+    def _insert(
+        self, text: str, token_ids: List[int], logp: List[float], weight_version: Optional[int] = None
     ) -> bool:
-        """Insert with token splitting - cut tokens based on existing node lengths."""
+        """Insert tokens - assign all tokens to the final node."""
 
         current_node = self.root
         remaining_text = text
-        remaining_tokens = token_ids.copy()
-        remaining_logp = logp.copy()
         
         # Track all nodes traversed during insert for weight version update
         traversed_nodes = [current_node]
@@ -393,11 +273,8 @@ class StringRadixTrie:
 
             if best_child is not None:
                 assert best_child.has_value, "Node must have tokens"
-                # Node already has tokens, cut from remaining based on its length
-                node_token_len = len(best_child.token_ids)
-                if node_token_len <= len(remaining_tokens):
-                    remaining_tokens = remaining_tokens[node_token_len:]
-                    remaining_logp = remaining_logp[node_token_len:]
+                # Node already has tokens, continue traversal without modifying tokens
+                # All tokens will be assigned to the final node
 
                 current_node = best_child
                 traversed_nodes.append(current_node)  # Track traversed node
@@ -408,18 +285,26 @@ class StringRadixTrie:
                 new_node.parent = current_node
                 new_node.string_key = remaining_text
 
-                # Give all remaining tokens to the new node
-                if remaining_tokens:
-                    new_node.token_ids = remaining_tokens
-                    new_node.logp = remaining_logp
-                    new_node.touch()
-                    # Increment cache size by number of tokens added
-                    self.cur_cache_size += len(remaining_tokens)
+                # Give all tokens to the new node
+                new_node.token_ids = token_ids
+                new_node.logp = logp
+                new_node.touch()
+                # Increment cache size by number of tokens added
+                self.cur_cache_size += len(token_ids)
 
                 current_node.children.append(new_node)  # Add to children list
                 traversed_nodes.append(new_node)  # Track new node
                 self.total_entries += 1
                 break
+        
+        # If we've traversed the entire text and the last node doesn't have tokens,
+        # assign all tokens to it
+        if remaining_text == "" and not current_node.has_value:
+            current_node.token_ids = token_ids
+            current_node.logp = logp
+            current_node.touch()
+            self.cur_cache_size += len(token_ids)
+            traversed_nodes.append(current_node)
 
         # Update weight version for all traversed nodes
         if weight_version is not None:
@@ -465,48 +350,6 @@ class StringRadixTrie:
         if result.matched_prefix == text:
             return result.last_node
         return None
-
-    def cleanup_stale_entries(self, max_age_seconds: int = 3600) -> int:
-        """Clean up stale entries."""
-        with self._lock:
-            stale_nodes = self._find_stale_nodes(max_age_seconds)
-            removed_count = 0
-            for node in stale_nodes:
-                removed_count += self._clean_node_subtree(node)
-            return removed_count
-
-    def _find_stale_nodes(self, max_age_seconds: int) -> List[StringTreeNode]:
-        """
-        Find all stale nodes by checking layer by layer.
-        If a parent node is stale, children are not checked.
-
-        Args:
-            max_age_seconds: Maximum age before considering stale
-
-        Returns:
-            List of stale nodes to remove
-        """
-        current_time = time.monotonic()
-        stale_nodes = []
-
-        def check_node(node):
-            if node == self.root:
-                # Check children but root itself is never stale
-                for child in node.children:
-                    check_node(child)
-                return
-
-            # If this node is stale, add it and skip children
-            if node.has_value and current_time - node.last_access_time > max_age_seconds and node.is_evictable:
-                stale_nodes.append(node)
-                return  # Don't check children
-
-            # Node is not stale, check its children
-            for child in node.children:
-                check_node(child)
-
-        check_node(self.root)
-        return stale_nodes
 
     def _clean_node_subtree(self, node: StringTreeNode) -> int:
         """
@@ -564,23 +407,26 @@ class StringRadixTrie:
             return True
         return False
 
-    def gc_by_weight_version(self) -> int:
+    def gc_by_weight_version(self, current_weight_version: Optional[int] = None) -> int:
         """
         Perform garbage collection based on weight version.
-        Remove nodes with weight_version < (max_weight_version - gc_threshold_k).
+        Remove nodes with weight_version < (current_weight_version - gc_threshold_k).
+        
+        Args:
+            current_weight_version: Current weight version to use for GC threshold
         
         Returns:
             Number of nodes removed
         """
         with self._lock:
-            if self.max_weight_version is None:
+            if current_weight_version is None:
                 if self.verbose:
-                    print("[RadixTree GC] No weight version available, skipping GC")
+                    print("[RadixTree GC] No weight version provided, skipping GC")
                 return 0
                 
-            gc_threshold = self.max_weight_version - self.gc_threshold_k
+            gc_threshold = current_weight_version - self.gc_threshold_k
             if self.verbose:
-                print(f"[RadixTree GC] Starting GC with threshold: {gc_threshold} (max_version: {self.max_weight_version}, k: {self.gc_threshold_k})")
+                print(f"[RadixTree GC] Starting GC with threshold: {gc_threshold} (current_version: {current_weight_version}, k: {self.gc_threshold_k})")
             
             nodes_to_remove = self._find_outdated_nodes(gc_threshold)
             removed_count = 0
@@ -720,8 +566,6 @@ class StringRadixTrie:
             List of token IDs corresponding to the input text if return_logp is False.
             Tuple of (token_ids, logp) if return_logp is True.
         """
-        # Fetch weight version from worker during generate operation
-        self._fetch_weight_version()
         # Call find_longest_prefix to get the match result
         result = self.find_longest_prefix(text)
         
@@ -753,7 +597,7 @@ class StringRadixTrie:
         
         # Print tree structure if verbose is enabled
         if self.verbose:
-            print("Tree structure after get_token_from_text:")
+            print("Tree structure after retrieve_from_text:")
             self.pretty_print()
             
         if return_logp:
@@ -763,25 +607,14 @@ class StringRadixTrie:
 
 # Example usage and testing
 if __name__ == "__main__":
-    # Create trie instance with router URL for testing
-    trie = StringRadixTrie(max_cache_size=100, verbose=True, router_url="http://localhost:30004")
-
-    # Show worker information fetched during initialization
-    print("\nWorker information fetched from router:")
-    worker_info = trie.get_worker_info()
-    print(f"Total workers: {worker_info['total_workers']}")
-    print(f"Worker URLs: {worker_info['worker_urls']}")
-    print(f"Max weight version: {worker_info['max_weight_version']}")
+    # Create trie instance for testing
+    trie = StringRadixTrie(max_cache_size=100, verbose=True)
     
-    # Test weight version fetching during generate operation
-    print("\nTesting weight version fetching during generate operation:")
+    # Test token retrieval
+    print("\nTesting token retrieval:")
     test_tokens = trie.retrieve_from_text("Hello world")
     print(f"Tokens for 'Hello world': {test_tokens}")
     
-    # Check updated weight version
-    updated_info = trie.get_worker_info()
-    print(f"Max weight version after generate: {updated_info['max_weight_version']}")
-
     # Example usage with simplified insert
     test_cases = [
         ("Hello world", [1, 2, 3], [-0.1, -0.2, -0.3]),
@@ -789,10 +622,10 @@ if __name__ == "__main__":
         ("Hi there", [4, 5, 6], [-0.4, -0.5, -0.6]),
     ]
 
-    # Insert test data
+    # Insert test data with weight version
     print("Inserting test data...")
     for text, tokens, logp in test_cases:
-        success = trie.insert(text, tokens, logp)
+        success = trie.insert(text, tokens, logp, weight_version=1)
         print(f"Inserted '{text}' -> {tokens}: {success}")
 
     print("\nTrie structure:")
@@ -831,4 +664,9 @@ if __name__ == "__main__":
     stats = trie.get_stats()
     for key, value in stats.items():
         print(f"{key}: {value}")
+    
+    # Test GC with weight version
+    print("\nTesting GC with weight version 5:")
+    gc_removed = trie.gc_by_weight_version(5)
+    print(f"GC removed {gc_removed} nodes")
 

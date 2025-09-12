@@ -1,11 +1,9 @@
-import asyncio
 import json
 from typing import Dict, Any, Optional, List
-from datamodel_code_generator import generate
 import httpx
+import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from numpy import full
 import uvicorn
 import argparse
 
@@ -56,10 +54,87 @@ class SlimeRouter:
         self.app = FastAPI()
         self.verbose = verbose
         
-        # Initialize radix tree for caching with tokenizer
+        # Worker information
+        self.worker_urls = []
+        self.max_weight_version = None
+        
+        # Initialize radix tree for caching with tokenizer (no router_url)
         self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=tokenizer, verbose=verbose)
         
+        # Fetch worker list from router during initialization
+        self._fetch_worker_list()
+        
         self._setup_routes()
+    
+    def _fetch_worker_list(self):
+        """
+        Fetch worker list from the SGLang router during initialization.
+        This method is called during __init__ to populate worker information.
+        """
+        try:
+            # Fetch worker URLs
+            list_workers_url = f"{self.sglang_router_url}/list_workers"
+            if self.verbose:
+                print(f"[SlimeRouter] Fetching worker list from: {list_workers_url}")
+                
+            response = requests.get(list_workers_url, timeout=5)
+            response.raise_for_status()
+            
+            worker_data = response.json()
+            self.worker_urls = worker_data.get("urls", [])
+            
+            if self.verbose:
+                print(f"[SlimeRouter] Successfully fetched {len(self.worker_urls)} workers: {self.worker_urls}")
+                
+        except requests.exceptions.RequestException as e:
+            if self.verbose:
+                print(f"[SlimeRouter] Failed to fetch worker information from router: {e}")
+            # Keep empty list if fetch fails
+            self.worker_urls = []
+        except Exception as e:
+            if self.verbose:
+                print(f"[SlimeRouter] Unexpected error while fetching worker information: {e}")
+            self.worker_urls = []
+    
+    def _fetch_weight_version(self):
+        """
+        Fetch weight version from the first available worker and update max_weight_version.
+        This method is called during generate operations.
+        """
+        if not self.worker_urls:
+            if self.verbose:
+                print("[SlimeRouter] No workers available to fetch weight version")
+            return
+            
+        # Use the first worker
+        worker_url = self.worker_urls[0]
+        
+        try:
+            get_weight_version_url = f"{worker_url}/get_weight_version"
+            if self.verbose:
+                print(f"[SlimeRouter] Fetching weight version from: {get_weight_version_url}")
+                
+            response = requests.get(get_weight_version_url, timeout=5)
+            response.raise_for_status()
+            
+            version_data = response.json()
+            current_weight_version = version_data.get("weight_version")
+            
+            if current_weight_version is not None:
+                # Update max_weight_version
+                if self.max_weight_version is None or current_weight_version > self.max_weight_version:
+                    self.max_weight_version = current_weight_version
+                    if self.verbose:
+                        print(f"[SlimeRouter] Updated max weight version to: {self.max_weight_version}")
+                elif self.verbose:
+                    print(f"[SlimeRouter] Current weight version {current_weight_version} <= max {self.max_weight_version}")
+            
+        except requests.exceptions.RequestException as e:
+            if self.verbose:
+                print(f"[SlimeRouter] Failed to fetch weight version from worker: {e}")
+        except Exception as e:
+            if self.verbose:
+                print(f"[SlimeRouter] Unexpected error while fetching weight version: {e}")
         
     def _setup_routes(self):
         """Setup all the HTTP routes"""
@@ -82,6 +157,9 @@ class SlimeRouter:
         input_text = payload.get("text", "")
         if self.verbose:
             print('input_test:', input_text)
+        
+        # Fetch weight version from worker before generate
+        self._fetch_weight_version()
         
         # Get tokens for the input text from radix tree
         input_tokens, input_logprobs = self.radix_tree.retrieve_from_text(input_text, return_logp=True)
@@ -121,17 +199,15 @@ class SlimeRouter:
                     # sglang will return the input token ids as well
                     full_token_ids = generated_token_ids
 
-                    # Insert the full trajectory into radix tree
+                    # Insert the full trajectory into radix tree with current weight version
                     if full_text and full_token_ids:
                         if "output_token_logprobs" in response_data.get("meta_info", {}):
-                            print("============ logprobs ==============")
                             generated_token_logprobs = [item[0] for item in response_data["meta_info"]["output_token_logprobs"]]
                             full_logprobs = input_logprobs + generated_token_logprobs
-                            print(full_logprobs)
-                            self.radix_tree.insert(full_text, full_token_ids, full_logprobs)
+                            self.radix_tree.insert(full_text, full_token_ids, full_logprobs, weight_version=self.max_weight_version)
                         else:
                             # Use default log probabilities (0.0) if not provided
-                            self.radix_tree.insert(full_text, full_token_ids)
+                            self.radix_tree.insert(full_text, full_token_ids, weight_version=self.max_weight_version)
 
                 return response_data
             except Exception as e:
@@ -150,7 +226,7 @@ class SlimeRouter:
         text = payload.get("text", "")
         return_logp = payload.get("return_logp", False)
         
-        # Use radix tree's retrieve_from_text method
+        # Use radix tree's retrieve_from_text method (no need to fetch weight version here)
         result = self.radix_tree.retrieve_from_text(text, return_logp=return_logp)
         
         # Handle the result based on whether logp was requested
@@ -160,11 +236,8 @@ class SlimeRouter:
             token_ids = result
             logp = None
         
-        # This is a simplified implementation. In a real scenario, you would
-        # use a tokenizer to convert text to tokens.
-        # The response structure matches what was shown in the example.
         result = {
-            "tokens": token_ids,  # This would be populated with actual token IDs
+            "tokens": token_ids,  # token IDs
             "response_length": len(token_ids),  # Length of response tokens
             "response": text,  # The input text
             "loss_mask": []  # Loss mask for the tokens
