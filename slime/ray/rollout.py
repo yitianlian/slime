@@ -118,7 +118,7 @@ def create_rollout_engines(args, pg):
 
 
 def _start_router(args):
-    """启动 SGLang router，如果启用 slime router 则也启动它"""
+    """start sgl router and slime router"""
     if args.sglang_router_ip is not None:
         return
 
@@ -157,10 +157,10 @@ def _start_router(args):
         import argparse
 
         slime_router_args = argparse.Namespace()
-        slime_router_args.host = getattr(args, 'slime_router_host', '0.0.0.0')  # slime router 监听地址
-        slime_router_args.port = getattr(args, 'slime_router_port', 30000)      # slime router 监听端口
-        slime_router_args.sglang_host = args.sglang_router_ip                   # SGLang router 地址
-        slime_router_args.sglang_port = args.sglang_router_port                 # SGLang router 端口
+        slime_router_args.host = getattr(args, 'slime_router_host', '0.0.0.0')  # slime router ip
+        slime_router_args.port = getattr(args, 'slime_router_port', 30000)      # slime router port
+        slime_router_args.sglang_host = args.sglang_router_ip                   # SGLang router ip
+        slime_router_args.sglang_port = args.sglang_router_port                 # SGLang router router
 
         slime_process = multiprocessing.Process(
             target=run_slime_router,

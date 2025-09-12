@@ -253,10 +253,12 @@ class StringRadixTrie:
     def _insert(
         self, text: str, token_ids: List[int], logp: List[float], weight_version: Optional[int] = None
     ) -> bool:
-        """Insert tokens - assign all tokens to the final node."""
+        """Insert tokens - skip tokens for existing nodes just like we skip text."""
 
         current_node = self.root
         remaining_text = text
+        remaining_tokens = token_ids[:]  # Copy the tokens list
+        remaining_logp = logp[:]  # Copy the logp list
         
         # Track all nodes traversed during insert for weight version update
         traversed_nodes = [current_node]
@@ -272,39 +274,42 @@ class StringRadixTrie:
                     best_key_len = len(child_node.string_key)
 
             if best_child is not None:
-                assert best_child.has_value, "Node must have tokens"
-                # Node already has tokens, continue traversal without modifying tokens
-                # All tokens will be assigned to the final node
-
+                # Found existing node - skip its text and tokens
                 current_node = best_child
-                traversed_nodes.append(current_node)  # Track traversed node
+                traversed_nodes.append(current_node)
                 remaining_text = remaining_text[best_key_len:]
+                
+                # Skip the tokens that this existing node covers
+                if best_child.has_value:
+                    tokens_to_skip = len(best_child.token_ids)
+                    remaining_tokens = remaining_tokens[tokens_to_skip:]
+                    remaining_logp = remaining_logp[tokens_to_skip:]
             else:
-                # Create new node with all remaining tokens
+                # Create new node for remaining text with remaining tokens
                 new_node = StringTreeNode()
                 new_node.parent = current_node
                 new_node.string_key = remaining_text
+                
+                if remaining_tokens:  # Only assign if there are tokens left
+                    new_node.token_ids = remaining_tokens
+                    new_node.logp = remaining_logp
+                    new_node.touch()
+                    # Increment cache size by number of tokens added
+                    self.cur_cache_size += len(remaining_tokens)
 
-                # Give all tokens to the new node
-                new_node.token_ids = token_ids
-                new_node.logp = logp
-                new_node.touch()
-                # Increment cache size by number of tokens added
-                self.cur_cache_size += len(token_ids)
-
-                current_node.children.append(new_node)  # Add to children list
-                traversed_nodes.append(new_node)  # Track new node
+                current_node.children.append(new_node)
+                traversed_nodes.append(new_node)
                 self.total_entries += 1
                 break
         
         # If we've traversed the entire text and the last node doesn't have tokens,
-        # assign all tokens to it
+        # assign remaining tokens to it
         if remaining_text == "" and not current_node.has_value:
-            current_node.token_ids = token_ids
-            current_node.logp = logp
-            current_node.touch()
-            self.cur_cache_size += len(token_ids)
-            traversed_nodes.append(current_node)
+            if remaining_tokens:  # Only assign if there are tokens left
+                current_node.token_ids = remaining_tokens
+                current_node.logp = remaining_logp
+                current_node.touch()
+                self.cur_cache_size += len(remaining_tokens)
 
         # Update weight version for all traversed nodes
         if weight_version is not None:
@@ -463,7 +468,7 @@ class StringRadixTrie:
                 
             # Check if this node should be removed
             if (node.weight_version is not None and 
-                node.weight_version < gc_threshold and 
+                node.weight_version <= gc_threshold and 
                 node.has_value):
                 outdated_nodes.append(node)
                 return  # Don't check children since entire subtree will be removed
@@ -497,7 +502,7 @@ class StringRadixTrie:
         validate_recursive(node, node.weight_version)
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get cache statistics including worker information."""
+        """Get cache statistics."""
         with self._lock:
             total_requests = self.cache_hits + self.cache_misses
             hit_rate = self.cache_hits / total_requests if total_requests > 0 else 0
@@ -510,9 +515,6 @@ class StringRadixTrie:
                 "max_cache_size": self.max_cache_size,
                 "cur_cache_size": self.cur_cache_size,
                 "gc_threshold_k": self.gc_threshold_k,
-                "total_workers": len(self.worker_urls),
-                "worker_urls": self.worker_urls,
-                "max_weight_version": self.max_weight_version,
             }
 
     def clear(self):
