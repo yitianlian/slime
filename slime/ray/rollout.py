@@ -153,14 +153,25 @@ def _start_router(args):
     print(f"SGLang router launched at {args.sglang_router_ip}:{args.sglang_router_port}")
     
     if getattr(args, 'use_slime_router', False):
+        # wait sgl router to fire up
+        time.sleep(30)
         from slime_plugins.slime_router.slime_router import run_slime_router
         import argparse
 
         slime_router_args = argparse.Namespace()
-        slime_router_args.host = getattr(args, 'slime_router_host', '0.0.0.0')  # slime router ip
-        slime_router_args.port = getattr(args, 'slime_router_port', 30000)      # slime router port
+        slime_router_args.host = get_host_info()[1]                        # slime router ip - same as sgl router
+        slime_router_args.port = find_available_port(random.randint(5000, 6000))  # slime router port - auto find
+
+        args.slime_router_host = slime_router_args.host
+        args.slime_router_port = slime_router_args.port
+
+        print(f"Slime router host and port {slime_router_args.host}: {slime_router_args.port}")
         slime_router_args.sglang_host = args.sglang_router_ip                   # SGLang router ip
         slime_router_args.sglang_port = args.sglang_router_port                 # SGLang router router
+        slime_router_args.tokenizer_name = args.hf_checkpoint
+
+        # TODO: verbose always = True for debug @ changyi
+        slime_router_args.verbose = True
 
         slime_process = multiprocessing.Process(
             target=run_slime_router,

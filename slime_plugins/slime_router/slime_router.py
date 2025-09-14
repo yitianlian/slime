@@ -52,7 +52,7 @@ class SlimeRouter:
         self.sglang_port = sglang_port
         self.sglang_router_url = f"http://{sglang_host}:{sglang_port}"
         self.app = FastAPI()
-        self.verbose = verbose
+        self.verbose = True
         
         # Worker information
         self.worker_urls = []
