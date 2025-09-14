@@ -52,7 +52,7 @@ class SlimeRouter:
         self.sglang_port = sglang_port
         self.sglang_router_url = f"http://{sglang_host}:{sglang_port}"
         self.app = FastAPI()
-        self.verbose = True
+        self.verbose = verbose
         
         # Worker information
         self.worker_urls = []
@@ -85,7 +85,7 @@ class SlimeRouter:
             
             if self.verbose:
                 print(f"[SlimeRouter] Successfully fetched {len(self.worker_urls)} workers: {self.worker_urls}")
-                
+
         except requests.exceptions.RequestException as e:
             if self.verbose:
                 print(f"[SlimeRouter] Failed to fetch worker information from router: {e}")
@@ -101,10 +101,17 @@ class SlimeRouter:
         Fetch weight version from the first available worker and update max_weight_version.
         This method is called during generate operations.
         """
+        # If worker list is empty, try to fetch new worker list
         if not self.worker_urls:
             if self.verbose:
-                print("[SlimeRouter] No workers available to fetch weight version")
-            return
+                print("[SlimeRouter] Worker list is empty, attempting to refetch worker list")
+            self._fetch_worker_list()
+
+            # If still no workers after refetching, handle the error
+            if not self.worker_urls:
+                if self.verbose:
+                    print("[SlimeRouter] No workers available after refetching worker list")
+                return
             
         # Use the first worker
         worker_url = self.worker_urls[0]
@@ -160,7 +167,17 @@ class SlimeRouter:
         
         # Fetch weight version from worker before generate
         self._fetch_weight_version()
-        
+
+        # Check if we still have no workers available after trying to fetch them
+        if not self.worker_urls:
+            error_msg = "No workers available for processing requests"
+            if self.verbose:
+                print(f"[SlimeRouter] {error_msg}")
+            return JSONResponse(
+                status_code=503,
+                content={"error": error_msg, "error_type": "no_workers_available"}
+            )
+
         # Get tokens for the input text from radix tree
         input_tokens, input_logprobs = self.radix_tree.retrieve_from_text(input_text, return_logp=True)
         
