@@ -119,7 +119,7 @@ async def generate_with_slime_router(args, sample: Sample, sampling_params) -> S
     # Extract generated text and update sample
     generated_text = output.get("text", "")
     sample.response += generated_text
-    sample.response_length += len(generated_text.split())  # Approximate token count
+    # Don't update response_length here - it will be calculated from actual tokens later
 
     # Get token IDs and logprobs using SlimeRouter's /retrieve_from_text
     retrieve_url = f"http://{slime_router_host}:{slime_router_port}/retrieve_from_text"
@@ -133,17 +133,46 @@ async def generate_with_slime_router(args, sample: Sample, sampling_params) -> S
     # Update sample with retrieved token information
     if "tokens" in retrieve_output:
         sample.tokens = retrieve_output["tokens"]
+        
+        # Calculate response_length from actual tokens
+        # Get prompt tokens to determine response length
+        if hasattr(sample, 'prompt_tokens') and sample.prompt_tokens:
+            prompt_token_count = len(sample.prompt_tokens)
+        else:
+            # Fallback: tokenize prompt to get prompt token count
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            prompt_tokens = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+            prompt_token_count = len(prompt_tokens)
+        
+        # Calculate response_length as the difference between total and prompt tokens
+        sample.response_length = len(sample.tokens) - prompt_token_count
+    
     if "logp" in retrieve_output:
-        # For SlimeRouter, we get the full logprobs - need to extract only new ones
+        # For SlimeRouter, we get the full logprobs - need to extract only response ones
         full_logprobs = retrieve_output["logp"]
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = []
         
-        # Calculate how many logprobs we had before
-        prev_logprob_count = len(sample.rollout_log_probs)
-        # Add new logprobs (this is a simplification - may need refinement)
-        new_logprobs = full_logprobs[prev_logprob_count:] if len(full_logprobs) > prev_logprob_count else []
-        sample.rollout_log_probs.extend(new_logprobs)
+        # Get the full token sequence to determine prompt vs response split
+        full_tokens = retrieve_output.get("tokens", [])
+        
+        # Calculate prompt token count (this should match the original prompt)
+        if hasattr(sample, 'prompt_tokens') and sample.prompt_tokens:
+            prompt_token_count = len(sample.prompt_tokens)
+        else:
+            # Fallback: tokenize prompt to get prompt token count
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            prompt_tokens = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+            prompt_token_count = len(prompt_tokens)
+        
+        # Extract only the response log_probs (skip prompt part)
+        response_logprobs = full_logprobs[prompt_token_count:] if len(full_logprobs) > prompt_token_count else []
+        
+        # Ensure we only add logprobs for the actual response tokens
+        if len(response_logprobs) > 0:
+            sample.rollout_log_probs.extend(response_logprobs)
 
     # Handle weight version if available
     if "meta_info" in output and "weight_version" in output["meta_info"]:
