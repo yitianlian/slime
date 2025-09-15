@@ -169,7 +169,8 @@ def _start_router(args):
         slime_router_args.tokenizer_name = args.hf_checkpoint
 
         # TODO: verbose always = True for debug @ changyi
-        slime_router_args.verbose = False
+        slime_router_args.verbose = True  # full log to debug
+        slime_router_args.enable_weight_version = True  # re-enable weight version
 
         slime_process = multiprocessing.Process(
             target=run_slime_router,

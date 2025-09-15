@@ -1,5 +1,5 @@
 import json
-from typing import Dict, Any, Optional, List
+import time
 import httpx
 import requests
 from fastapi import FastAPI, Request
@@ -33,8 +33,17 @@ def run_slime_router(args: argparse.Namespace):
             if args.verbose:
                 print(f"Warning: Failed to load tokenizer {args.tokenizer_name}: {e}")
     
-    # Initialize the router with tokenizer
-    slime_router = SlimeRouter(args.sglang_host, args.sglang_port, tokenizer=tokenizer, verbose=args.verbose)
+    # Initialize the router with tokenizer and lazy worker initialization
+    lazy_worker_init = getattr(args, 'lazy_worker_init', True)  # Default to True
+    enable_weight_version = getattr(args, 'enable_weight_version', True)  # Default to True
+    slime_router = SlimeRouter(
+        args.sglang_host, 
+        args.sglang_port, 
+        tokenizer=tokenizer, 
+        verbose=args.verbose,
+        lazy_worker_init=lazy_worker_init,
+        enable_weight_version=enable_weight_version
+    )
     
     # Start the server
     uvicorn.run(
@@ -46,61 +55,92 @@ def run_slime_router(args: argparse.Namespace):
 
 
 class SlimeRouter:
-    def __init__(self, sglang_host: str, sglang_port: int, tokenizer=None, verbose=False):
+    def __init__(self, sglang_host: str, sglang_port: int, tokenizer=None, verbose=False, lazy_worker_init=True, enable_weight_version=True):
         """Initialize the SlimeRouter with SGLang router address"""
         self.sglang_host = sglang_host
         self.sglang_port = sglang_port
         self.sglang_router_url = f"http://{sglang_host}:{sglang_port}"
         self.app = FastAPI()
         self.verbose = verbose
+        self.lazy_worker_init = lazy_worker_init
+        self.enable_weight_version = enable_weight_version
         
         # Worker information
         self.worker_urls = []
         self.max_weight_version = None
+        self.worker_list_initialized = False
         
         # Initialize radix tree for caching with tokenizer (no router_url)
         self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=tokenizer, verbose=verbose)
         
-        # Fetch worker list from router during initialization
-        self._fetch_worker_list()
+        # Fetch worker list from router during initialization (unless lazy)
+        if not lazy_worker_init:
+            self._fetch_worker_list()
         
         self._setup_routes()
     
-    def _fetch_worker_list(self):
+    def _fetch_worker_list(self, retry_on_empty=True, max_retries=10):
         """
         Fetch worker list from the SGLang router during initialization.
         This method is called during __init__ to populate worker information.
+        
+        Args:
+            retry_on_empty: If True, retry when no workers are found (for startup scenarios)
+            max_retries: Maximum number of retries when no workers are found
         """
-        try:
-            # Fetch worker URLs
-            list_workers_url = f"{self.sglang_router_url}/list_workers"
-            if self.verbose:
-                print(f"[SlimeRouter] Fetching worker list from: {list_workers_url}")
+        retry_count = 0
+        
+        while retry_count <= max_retries:
+            try:
+                # Fetch worker URLs
+                list_workers_url = f"{self.sglang_router_url}/list_workers"
+                if self.verbose:
+                    print(f"[SlimeRouter] Fetching worker list from: {list_workers_url} (attempt {retry_count + 1})")
+                    
+                response = requests.get(list_workers_url, timeout=5)  # 增加超时时间
+                response.raise_for_status()
                 
-            response = requests.get(list_workers_url, timeout=5)
-            response.raise_for_status()
-            
-            worker_data = response.json()
-            self.worker_urls = worker_data.get("urls", [])
-            
-            if self.verbose:
-                print(f"[SlimeRouter] Successfully fetched {len(self.worker_urls)} workers: {self.worker_urls}")
+                worker_data = response.json()
+                self.worker_urls = worker_data.get("urls", [])
+                
+                if self.verbose:
+                    print(f"[SlimeRouter] Successfully fetched {len(self.worker_urls)} workers: {self.worker_urls}")
+                
+                # retry when no workers are found
+                if not self.worker_urls and retry_on_empty and retry_count < max_retries:
+                    print(f"[SlimeRouter] No workers found, retrying in 2 seconds... (attempt {retry_count + 1}/{max_retries + 1})")
+                    time.sleep(2)
+                    retry_count += 1
+                    continue
+                elif not self.worker_urls:
+                    print(f"[SlimeRouter] WARNING: No workers found in SGLang router at {self.sglang_router_url}")
+                    print(f"[SlimeRouter] Please ensure SGLang workers are running and registered with the router")
+                break 
 
-        except requests.exceptions.RequestException as e:
-            if self.verbose:
-                print(f"[SlimeRouter] Failed to fetch worker information from router: {e}")
-            # Keep empty list if fetch fails
-            self.worker_urls = []
-        except Exception as e:
-            if self.verbose:
-                print(f"[SlimeRouter] Unexpected error while fetching worker information: {e}")
-            self.worker_urls = []
+            except requests.exceptions.RequestException as e:
+                if self.verbose:
+                    print(f"[SlimeRouter] Failed to fetch worker information from router: {e}")
+                # Keep empty list if fetch fails
+                self.worker_urls = []
+                break
+            except Exception as e:
+                if self.verbose:
+                    print(f"[SlimeRouter] Unexpected error while fetching worker information: {e}")
+                self.worker_urls = []
+                break
     
-    def _fetch_weight_version(self):
+
+    def _ensure_worker_list_initialized(self):
         """
-        Fetch weight version from the first available worker and update max_weight_version.
-        This method is called during generate operations.
+        Ensure worker list is initialized (for lazy initialization).
         """
+        # If using lazy initialization and worker list not initialized, initialize it now
+        if self.lazy_worker_init and not self.worker_list_initialized:
+            if self.verbose:
+                print("[SlimeRouter] Lazy initialization: fetching worker list for the first time")
+            self._fetch_worker_list()
+            self.worker_list_initialized = True
+        
         # If worker list is empty, try to fetch new worker list
         if not self.worker_urls:
             if self.verbose:
@@ -111,7 +151,18 @@ class SlimeRouter:
             if not self.worker_urls:
                 if self.verbose:
                     print("[SlimeRouter] No workers available after refetching worker list")
-                return
+                return False
+        
+        return True
+    
+    def _update_weight_version_from_response(self, response_data):
+        """
+        Update weight version from SGLang response meta_info.
+        This is the correct way to get weight version - from the generate response.
+        """
+        
+        if not self.enable_weight_version:
+            return
             
         # Use the first worker
         worker_url = self.worker_urls[0]
@@ -148,11 +199,49 @@ class SlimeRouter:
         # IMPORTANT: Register specific routes BEFORE the catch-all route
         self.app.post("/generate")(self.generate)
         self.app.post("/retrieve_from_text")(self.retrieve_from_text)
+        self.app.get("/health")(self.health_check)
+        self.app.get("/test")(self.test_endpoint)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
         if self.verbose:
             print("set up complete")
+    
+    async def health_check(self, request: Request):
+        """Health check endpoint to verify SlimeRouter and SGLang router status"""
+        health_status = {
+            "slime_router": "healthy",
+            "sglang_router_url": self.sglang_router_url,
+            "worker_count": len(self.worker_urls),
+            "workers": self.worker_urls,
+            "max_weight_version": self.max_weight_version,
+            "radix_tree_size": len(self.radix_tree.cache) if hasattr(self.radix_tree, 'cache') else "unknown"
+        }
+        
+        # Test SGLang router connectivity
+        try:
+            import requests
+            response = requests.get(f"{self.sglang_router_url}/list_workers", timeout=5)
+            if response.status_code == 200:
+                health_status["sglang_router"] = "healthy"
+                sglang_data = response.json()
+                health_status["sglang_workers"] = sglang_data.get("urls", [])
+            else:
+                health_status["sglang_router"] = f"unhealthy (status: {response.status_code})"
+        except Exception as e:
+            health_status["sglang_router"] = f"unreachable: {str(e)}"
+        
+        return health_status
+    
+    async def test_endpoint(self, request: Request):
+        """Simple test endpoint to verify SlimeRouter is working"""
+        return {
+            "status": "ok",
+            "message": "SlimeRouter is running",
+            "sglang_router_url": self.sglang_router_url,
+            "worker_count": len(self.worker_urls),
+            "workers": self.worker_urls
+        }
         
     async def generate(self, request: Request):
         """Wrapper for SGLang router's /generate endpoint"""
@@ -163,13 +252,10 @@ class SlimeRouter:
         # Extract text from payload for radix tree operations
         input_text = payload.get("text", "")
         if self.verbose:
-            print('input_test:', input_text)
+            print(f'[SlimeRouter] Received request with input_text: {input_text[:100]}...')
         
-        # Fetch weight version from worker before generate
-        self._fetch_weight_version()
-
-        # Check if we still have no workers available after trying to fetch them
-        if not self.worker_urls:
+        # Ensure worker list is initialized
+        if not self._ensure_worker_list_initialized():
             error_msg = "No workers available for processing requests"
             if self.verbose:
                 print(f"[SlimeRouter] {error_msg}")
@@ -179,7 +265,17 @@ class SlimeRouter:
             )
 
         # Get tokens for the input text from radix tree
-        input_tokens, input_logprobs = self.radix_tree.retrieve_from_text(input_text, return_logp=True)
+        try:
+            input_tokens, input_logprobs = self.radix_tree.retrieve_from_text(input_text, return_logp=True)
+            if self.verbose:
+                print(f"[SlimeRouter] Retrieved {len(input_tokens)} tokens from radix tree")
+        except Exception as e:
+            if self.verbose:
+                print(f"[SlimeRouter] Error retrieving tokens from radix tree: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Failed to retrieve tokens: {str(e)}"}
+            )
         
         # Forward request to SGLang router
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -192,18 +288,43 @@ class SlimeRouter:
                     sglang_payload["input_ids"] = input_tokens
                 
                 if self.verbose:
-                    print("=============== Payload: ========================")
-                    print(sglang_payload)
+                    print("=============== SGLang Payload: ========================")
+                    print(f"input_ids length: {len(sglang_payload.get('input_ids', []))}")
+                    print(f"sampling_params: {sglang_payload.get('sampling_params', {})}")
 
                 response = await client.post(
                     f"{self.sglang_router_url}/generate",
                     json=sglang_payload
                 )
-                response_data = response.json()
+                
+                if response.status_code != 200:
+                    error_msg = f"SGLang router returned status {response.status_code}: {response.text}"
+                    if self.verbose:
+                        print(f"[SlimeRouter] {error_msg}")
+                    return JSONResponse(
+                        status_code=response.status_code,
+                        content={"error": error_msg, "error_type": "sglang_router_error"}
+                    )
+                
+                try:
+                    response_data = response.json()
+                except json.JSONDecodeError as e:
+                    error_msg = f"Invalid JSON response from SGLang router: {str(e)}"
+                    if self.verbose:
+                        print(f"[SlimeRouter] {error_msg}")
+                    return JSONResponse(
+                        status_code=500,
+                        content={"error": error_msg}
+                    )
 
                 if self.verbose:
-                    print("=============== Response data: ========================")
-                    print(response_data)
+                    print("=============== SGLang Response: ========================")
+                    print(f"Response keys: {list(response_data.keys())}")
+                    if "text" in response_data:
+                        print(f"Generated text length: {len(response_data['text'])}")
+                
+                # Update weight version from SGLang response (correct way)
+                self._update_weight_version_from_response(response_data)
                 
                 # Extract data for radix tree insertion
                 if "text" in response_data and "output_ids" in response_data:
@@ -218,21 +339,47 @@ class SlimeRouter:
 
                     # Insert the full trajectory into radix tree with current weight version
                     if full_text and full_token_ids:
-                        if "output_token_logprobs" in response_data.get("meta_info", {}):
-                            generated_token_logprobs = [item[0] for item in response_data["meta_info"]["output_token_logprobs"]]
-                            full_logprobs = input_logprobs + generated_token_logprobs
-                            self.radix_tree.insert(full_text, full_token_ids, full_logprobs, weight_version=self.max_weight_version)
-                        else:
-                            # Use default log probabilities (0.0) if not provided
-                            self.radix_tree.insert(full_text, full_token_ids, weight_version=self.max_weight_version)
+                        try:
+                            if "output_token_logprobs" in response_data.get("meta_info", {}):
+                                generated_token_logprobs = [item[0] for item in response_data["meta_info"]["output_token_logprobs"]]
+                                full_logprobs = input_logprobs + generated_token_logprobs
+                                self.radix_tree.insert(full_text, full_token_ids, full_logprobs, weight_version=self.max_weight_version)
+                            else:
+                                # Use default log probabilities (0.0) if not provided
+                                self.radix_tree.insert(full_text, full_token_ids, weight_version=self.max_weight_version)
+                            
+                            if self.verbose:
+                                print(f"[SlimeRouter] Successfully cached trajectory with {len(full_token_ids)} tokens")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[SlimeRouter] Warning: Failed to cache trajectory: {e}")
+                            # Don't fail the request if caching fails
 
                 return response_data
-            except Exception as e:
+                
+            except httpx.TimeoutException as e:
+                error_msg = f"Timeout connecting to SGLang router: {str(e)}"
                 if self.verbose:
-                    print(f"Error in generate endpoint: {e}")
+                    print(f"[SlimeRouter] {error_msg}")
+                return JSONResponse(
+                    status_code=504,
+                    content={"error": error_msg, "error_type": "timeout"}
+                )
+            except httpx.ConnectError as e:
+                error_msg = f"Cannot connect to SGLang router at {self.sglang_router_url}: {str(e)}"
+                if self.verbose:
+                    print(f"[SlimeRouter] {error_msg}")
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": error_msg, "error_type": "connection_error"}
+                )
+            except Exception as e:
+                error_msg = f"Error communicating with SGLang router: {str(e)}"
+                if self.verbose:
+                    print(f"[SlimeRouter] {error_msg}")
                 return JSONResponse(
                     status_code=500,
-                    content={"error": str(e)}
+                    content={"error": error_msg, "error_type": "communication_error"}
                 )
     
     async def retrieve_from_text(self, request: Request):
