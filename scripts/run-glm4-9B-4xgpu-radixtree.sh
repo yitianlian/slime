@@ -66,9 +66,9 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 2
    --sequence-parallel
-   --pipeline-model-parallel-size 2
+   --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
@@ -77,7 +77,7 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
 
-   # --micro-batch-size 1
+   --micro-batch-size 1
    --use-dynamic-batch-size
    --max-tokens-per-gpu 2304
 )
@@ -103,14 +103,14 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    # --use-wandb
-   # --wandb-project slime-dev-radixtree
+   # --wandb-project slime-dev-base
    # --wandb-group qwen3-4B-4xgpu
    # --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
-   --use-slime-router
+   --rollout-num-gpus-per-engine 2
+   # --use-slime-router
 )
 
 MISC_ARGS=(
@@ -141,10 +141,8 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 4 \
    --rollout-num-gpus 2 \
-   --colocate \
-    --debug-rollout-only \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
