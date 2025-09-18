@@ -278,7 +278,7 @@ class SlimeRouter:
             )
         
         # Forward request to SGLang router
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             try:
                 # Modify the payload to use input_ids instead of text for token-in token-out
                 sglang_payload = payload.copy()
@@ -425,7 +425,7 @@ class SlimeRouter:
         if self.verbose:
             print(f"Proxying request to: {url}")
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             try:
                 if request.method == "GET":
                     response = await client.get(url, headers=headers)
