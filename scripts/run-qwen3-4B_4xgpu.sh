@@ -17,8 +17,6 @@ export PYTHONBUFFERED=16
 
 export CUDA_VISIBLE_DEVICES=4,5,6,7
 
-WANDB_KEY=8920a59faeab83c97b55c3cbe78618f11d0a1821
-
 NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
     HAS_NVLINK=1
@@ -31,11 +29,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "/root/slime/scripts/models/qwen3-4B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen/Qwen3-4B-Instruct-2507
-   --ref-load /root/Qwen/Qwen3-4B-Instruct-2507_torch_dist
-   --rotary-base 5000000
-   # --load /root/GLM-Z1-9B-0414_slime/
-   --save /root/qwen3-4b_slime/
+   --hf-checkpoint /root/Qwen3-4B
+   #--hf-checkpoint /root/Qwen3-4B-FP8
+   --ref-load /root/Qwen3-4B_torch_dist
+   --load /root/Qwen3-4B_slime/
+   --save /root/Qwen3-4B_slime/
    --save-interval 20
 )
 
@@ -67,9 +65,9 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 2
    --sequence-parallel
-   --pipeline-model-parallel-size 2
+   --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
@@ -78,9 +76,9 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
 
-   --micro-batch-size 1
+   # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 2304
+   --max-tokens-per-gpu 9216
 )
 
 GRPO_ARGS=(
@@ -104,13 +102,14 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project slime-dev-qwen3
+   --wandb-project slime-dev-qwen3-radix
    --wandb-group qwen3-4B-4xgpu
    --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
+   --rollout-num-gpus-per-engine 2
+   --use-slime-router
 )
 
 MISC_ARGS=(
