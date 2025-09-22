@@ -117,7 +117,7 @@ async def generate_with_slime_router(args, sample: Sample, sampling_params) -> S
     }
 
     # Call SlimeRouter /generate endpoint
-    output = await post(url, payload, use_http2=getattr(args, 'use_http2', False))
+    output = await post(url, payload)
 
     # Extract generated text and update sample
     generated_text = output.get("text", "")
@@ -131,7 +131,7 @@ async def generate_with_slime_router(args, sample: Sample, sampling_params) -> S
         "return_logp": True
     }
     
-    retrieve_output = await post(retrieve_url, retrieve_payload, use_http2=getattr(args, 'use_http2', False))
+    retrieve_output = await post(retrieve_url, retrieve_payload)
     
     # Update sample with retrieved token information
     if "tokens" in retrieve_output:
@@ -172,6 +172,7 @@ async def generate_with_slime_router(args, sample: Sample, sampling_params) -> S
         sample.tokens = new_tokens
         
         # Debug information
+        # if getattr(args, 'verbose', False):
         print(f"[SlimeRouter Debug] response_length: {sample.response_length}, tokens_length: {len(sample.tokens)}")
         print(f"[SlimeRouter Debug] prompt_token_count: {prompt_token_count if 'prompt_token_count' in locals() else 'N/A'}")
         print(f"[SlimeRouter Debug] sample.response length: {len(sample.response)}")
