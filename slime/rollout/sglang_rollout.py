@@ -135,21 +135,46 @@ async def generate_with_slime_router(args, sample: Sample, sampling_params) -> S
     
     # Update sample with retrieved token information
     if "tokens" in retrieve_output:
-        sample.tokens = retrieve_output["tokens"]
+        new_tokens = retrieve_output["tokens"]
         
-        # Calculate response_length from actual tokens
-        # Get prompt tokens to determine response length
-        if hasattr(sample, 'prompt_tokens') and sample.prompt_tokens:
-            prompt_token_count = len(sample.prompt_tokens)
+        # For multi-turn conversations, we need to handle token accumulation properly
+        if len(sample.response) > 0:
+            # Multi-turn: calculate only the new response tokens
+            # Get prompt tokens to determine where response starts
+            if hasattr(sample, 'prompt_tokens') and sample.prompt_tokens:
+                prompt_token_count = len(sample.prompt_tokens)
+            else:
+                # Fallback: tokenize prompt to get prompt token count
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+                prompt_tokens = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+                prompt_token_count = len(prompt_tokens)
+            
+            # Calculate new response tokens (total - existing tokens)
+            new_response_tokens = len(new_tokens) - len(sample.tokens)
+            sample.response_length += new_response_tokens
         else:
-            # Fallback: tokenize prompt to get prompt token count
-            from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-            prompt_tokens = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
-            prompt_token_count = len(prompt_tokens)
+            # First turn: set up initial tokens and response length
+            # Calculate response_length from actual tokens
+            if hasattr(sample, 'prompt_tokens') and sample.prompt_tokens:
+                prompt_token_count = len(sample.prompt_tokens)
+            else:
+                # Fallback: tokenize prompt to get prompt token count
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+                prompt_tokens = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+                prompt_token_count = len(prompt_tokens)
+            
+            # Calculate response_length as the difference between total and prompt tokens
+            sample.response_length = max(0, len(new_tokens) - prompt_token_count)
         
-        # Calculate response_length as the difference between total and prompt tokens
-        sample.response_length = len(sample.tokens) - prompt_token_count
+        # Update tokens
+        sample.tokens = new_tokens
+        
+        # Debug information
+        print(f"[SlimeRouter Debug] response_length: {sample.response_length}, tokens_length: {len(sample.tokens)}")
+        print(f"[SlimeRouter Debug] prompt_token_count: {prompt_token_count if 'prompt_token_count' in locals() else 'N/A'}")
+        print(f"[SlimeRouter Debug] sample.response length: {len(sample.response)}")
     
     if "logp" in retrieve_output:
         # For SlimeRouter, we get the full logprobs - need to extract only response ones
