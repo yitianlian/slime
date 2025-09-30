@@ -51,23 +51,23 @@ class SlimeRouter:
             middleware = load_function(middleware_path)
             self.app.add_middleware(middleware, router=self)
 
-    def _update_weight_version_from_response(self, output):
-        """
-        Update weight version from SGLang response meta_info.
-        This is the correct way to get weight version - from the generate response.
-        """
-        if "meta_info" not in output or "weight_version" not in output["meta_info"]:
-            return
+    # def _update_weight_version_from_response(self, output):
+    #     """
+    #     Update weight version from SGLang response meta_info.
+    #     This is the correct way to get weight version - from the generate response.
+    #     """
+    #     if "meta_info" not in output or "weight_version" not in output["meta_info"]:
+    #         return
 
-        current_weight_version = output["meta_info"]["weight_version"]
+    #     current_weight_version = output["meta_info"]["weight_version"]
 
-        # Update max_weight_version
-        if self.max_weight_version is None or current_weight_version > self.max_weight_version:
-            self.max_weight_version = current_weight_version
-            if self.verbose:
-                print(f"[slime-router] Updated max weight version to: {self.max_weight_version}")
-        elif self.verbose:
-            print(f"[slime-router] Current weight version {current_weight_version} <= max {self.max_weight_version}")
+    #     # Update max_weight_version
+    #     if self.max_weight_version is None or current_weight_version > self.max_weight_version:
+    #         self.max_weight_version = current_weight_version
+    #         if self.verbose:
+    #             print(f"[slime-router] Updated max weight version to: {self.max_weight_version}")
+    #     elif self.verbose:
+    #         print(f"[slime-router] Current weight version {current_weight_version} <= max {self.max_weight_version}")
 
     def _setup_routes(self):
         """Setup all the HTTP routes"""

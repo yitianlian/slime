@@ -1,3 +1,5 @@
+from time import sleep
+
 from fastapi import BaseHTTPMiddleware, FastAPI
 from transformers import AutoTokenizer
 
@@ -28,7 +30,15 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         )
         request_json["input_tokens"] = input_tokens
         request._json = request_json  # Update the request json
-        response = await call_next(request)
+        while _ in range(5):
+            response = await call_next(request)
+            if (
+                "meta_info" in response
+                and "finish_reason" in response["meta_info"]
+                and response["meta_info"]["finish_reason"]["type"] != "abort"
+            ):
+                break
+            sleep(30)
 
         # Extract data for radix tree insertion
         if "text" in response and "output_ids" in response:
@@ -52,7 +62,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                             full_token_ids,
                             full_logprobs,
                             full_loss_mask,
-                            weight_version=self.max_weight_version,
+                            weight_version=response["meta_info"]["weight_version"],
                         )
                     else:
                         print("Warning: output token logprobs not in response")
@@ -61,7 +71,11 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                         full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
                         # Use default log probabilities (0.0) if not provided
                         self.radix_tree.insert(
-                            full_text, full_token_ids, None, full_loss_mask, weight_version=self.max_weight_version
+                            full_text,
+                            full_token_ids,
+                            None,
+                            full_loss_mask,
+                            weight_version=response["meta_info"]["weight_version"],
                         )
 
                     if self.verbose:

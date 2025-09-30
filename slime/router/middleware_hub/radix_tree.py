@@ -602,7 +602,7 @@ class StringRadixTrie:
             else:
                 return (
                     result.token_ids + additional_tokens,
-                    None,
+                    [0] * len(result.token_ids + additional_tokens),
                     result.loss_mask + len(additional_tokens) * [0],
                 )
 
@@ -619,7 +619,7 @@ class StringRadixTrie:
                 # Return default logp values (0.0) when using tokenizer
                 return (tokens, [0.0] * len(tokens), [0] * len(tokens))
             else:
-                return (tokens, None, [0] * len(tokens))
+                return (tokens, [0.0] * len(tokens), [0] * len(tokens))
         else:
             raise ValueError("Tokenizer or input text can't be empty")
 
