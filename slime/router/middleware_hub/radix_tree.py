@@ -291,6 +291,7 @@ class StringRadixTrie:
 
         # Track all nodes traversed during insert for weight version update
         traversed_nodes = [current_node]
+        new_node = None
 
         while remaining_text:
             # Find best startswith match
@@ -344,9 +345,8 @@ class StringRadixTrie:
                 self.cur_cache_size += len(remaining_tokens)
 
         # Update weight version for all traversed nodes
-        if weight_version is not None:
-            for node in traversed_nodes:
-                node.weight_version = weight_version
+        if weight_version is not None and new_node:
+            new_node.weight_version = weight_version
 
         return True
 
@@ -592,10 +592,19 @@ class StringRadixTrie:
 
         # If we have a match and it covers the entire text, return the tokens
         if result.matched_prefix and result.token_ids:
+            additional_tokens = self.tokenizer(result.remaining_string, add_special_tokens=False)["input_ids"]
             if return_logprob:
-                return (result.token_ids, result.logp, result.loss_mask)
+                return (
+                    result.token_ids + additional_tokens,
+                    result.logp + len(additional_tokens) * [0.0],
+                    result.loss_mask + len(additional_tokens) * [0],
+                )
             else:
-                return result.token_ids
+                return (
+                    result.token_ids + additional_tokens,
+                    None,
+                    result.loss_mask + len(additional_tokens) * [0],
+                )
 
         # If result is empty and input text is not empty, tokenize with tokenizer
         # This is needed because we cannot get the prompt token id from engine response
@@ -608,24 +617,11 @@ class StringRadixTrie:
             # Return the tokens
             if return_logprob:
                 # Return default logp values (0.0) when using tokenizer
-                return (tokens, [0.0] * len(tokens), [1] * len(tokens))
+                return (tokens, [0.0] * len(tokens), [0] * len(tokens))
             else:
-                return tokens
-
-        # If no tokenizer or other cases, return the matched tokens (could be empty)
-        result_tokens = result.token_ids if result else []
-        result_logp = result.logp if result else []
-        result_loss_mask = result.loss_mask if result else []
-
-        # Print tree structure if verbose is enabled
-        if self.verbose:
-            print("Tree structure after retrieve_from_text:")
-            self.pretty_print()
-
-        if return_logprob:
-            return (result_tokens, result_logp, result_loss_mask)
+                return (tokens, None, [0] * len(tokens))
         else:
-            return result_tokens
+            raise ValueError("Tokenizer or input text can't be empty")
 
 
 # Example usage and testing

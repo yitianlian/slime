@@ -23,7 +23,9 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         input_text = request_json.pop("text", "")
         if not input_text:
             return await call_next(request)
-        input_tokens, input_logprobs = self.radix_tree.retrieve_from_text(input_text, return_logprob=True)
+        input_tokens, input_logprobs, input_loss_mask = self.radix_tree.retrieve_from_text(
+            input_text, return_logprob=True
+        )
         request_json["input_tokens"] = input_tokens
         request._json = request_json  # Update the request json
         response = await call_next(request)
@@ -44,14 +46,23 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                         generated_token_ids = [item[1] for item in response["meta_info"]["output_token_logprobs"]]
                         full_logprobs = input_logprobs + generated_token_logprobs
                         full_token_ids = input_tokens + generated_token_ids
+                        full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
                         self.radix_tree.insert(
-                            full_text, full_token_ids, full_logprobs, weight_version=self.max_weight_version
+                            full_text,
+                            full_token_ids,
+                            full_logprobs,
+                            full_loss_mask,
+                            weight_version=self.max_weight_version,
                         )
                     else:
+                        print("Warning: output token logprobs not in response")
                         generated_token_ids = self.tokenizer(generated_text, add_special_tokens=False)["input_ids"]
                         full_token_ids = input_tokens + generated_token_ids
+                        full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
                         # Use default log probabilities (0.0) if not provided
-                        self.radix_tree.insert(full_text, full_token_ids, weight_version=self.max_weight_version)
+                        self.radix_tree.insert(
+                            full_text, full_token_ids, None, full_loss_mask, weight_version=self.max_weight_version
+                        )
 
                     if self.verbose:
                         print(f"[slime-router] Successfully cached trajectory with {len(full_token_ids)} tokens")
