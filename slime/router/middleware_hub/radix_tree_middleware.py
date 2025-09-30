@@ -31,24 +31,25 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         # Extract data for radix tree insertion
         if "text" in response and "output_ids" in response:
             generated_text = response["text"]
-            generated_token_ids = response["output_ids"]
+            # generated_token_ids = response["output_ids"]
 
             # Combine input tokens and generated tokens
             full_text = input_text + generated_text
 
-            # sglang will return the input token ids as well
-            full_token_ids = generated_token_ids
-
             # Insert the full trajectory into radix tree with current weight version
-            if full_text and full_token_ids:
+            if full_text:
                 try:
                     if "output_token_logprobs" in response.get("meta_info", {}):
                         generated_token_logprobs = [item[0] for item in response["meta_info"]["output_token_logprobs"]]
+                        generated_token_ids = [item[1] for item in response["meta_info"]["output_token_logprobs"]]
                         full_logprobs = input_logprobs + generated_token_logprobs
+                        full_token_ids = input_tokens + generated_token_ids
                         self.radix_tree.insert(
                             full_text, full_token_ids, full_logprobs, weight_version=self.max_weight_version
                         )
                     else:
+                        generated_token_ids = self.tokenizer(generated_text, add_special_tokens=False)["input_ids"]
+                        full_token_ids = input_tokens + generated_token_ids
                         # Use default log probabilities (0.0) if not provided
                         self.radix_tree.insert(full_text, full_token_ids, weight_version=self.max_weight_version)
 
