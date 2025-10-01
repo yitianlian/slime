@@ -11,8 +11,10 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.router = router
         self.args = router.args
-        self.tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
         self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=self.tokenizer, verbose=False)
+        # expose radix tree on router for route handlers
+        self.router.radix_tree = self.radix_tree
 
     async def dispatch(self, request, call_next):
         # Example middleware logic using radix tree
@@ -78,10 +80,10 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                             weight_version=response["meta_info"]["weight_version"],
                         )
 
-                    if self.verbose:
+                    if getattr(self.router, "verbose", False):
                         print(f"[slime-router] Successfully cached trajectory with {len(full_token_ids)} tokens")
                 except Exception as e:
-                    if self.verbose:
+                    if getattr(self.router, "verbose", False):
                         print(f"[slime-router] Warning: Failed to cache trajectory: {e}")
                     # Don't fail the request if caching fails
         return response
