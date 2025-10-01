@@ -45,15 +45,12 @@ ROLLOUT_ARGS=(
    --label-key label
    --apply-chat-template
    --rollout-shuffle
-
    --rm-type deepscaler
-
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 0.8
-
    --global-batch-size 256
    --balance-data
 )

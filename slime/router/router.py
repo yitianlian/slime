@@ -146,25 +146,19 @@ class SlimeRouter:
         return_logp = payload.get("return_logp", False)
 
         # Use radix tree's retrieve_from_text method (no need to fetch weight version here)
-        result = self.radix_tree.retrieve_from_text(text, return_logp=return_logp)
+        token_ids, logp, loss_mask = self.radix_tree.retrieve_from_text(text, return_logp=return_logp)
 
         # Handle the result based on whether logp was requested
-        if return_logp:
-            token_ids, logp = result
-        else:
-            token_ids = result
-            logp = None
 
         result = {
             "tokens": token_ids,  # token IDs
-            "response_length": len(token_ids),  # Length of response tokens
             "response": text,  # The input text
-            "loss_mask": [],  # Loss mask for the tokens
+            "loss_mask": loss_mask,  # Loss mask for the tokens
         }
 
         # Add logp to response if requested
-        if return_logp and logp is not None:
-            result["logp"] = logp
+        if return_logp and sum(logp) > 0:
+            result["rollout_logp"] = logp
 
         return result
 

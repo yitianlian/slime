@@ -64,6 +64,7 @@ async def generate_with_slime_router(args, sample: Sample, sampling_params) -> S
             from transformers import AutoTokenizer
 
             tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            print()
             prompt_tokens = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
             prompt_token_count = len(prompt_tokens)
 
