@@ -17,20 +17,29 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         self.router.radix_tree = self.radix_tree
 
     async def dispatch(self, request: Request, call_next):
+
         path = request.url.path
+
         if path != "/generate":
             return await call_next(request)
 
         request_json = await request.json()
-        input_text = request_json.pop("text", "")
+        if "text" in request_json:
+            input_text = request_json.pop("text", "")
+        elif "input_ids" in request_json:
+            input_text = self.tokenizer.decode(request_json["input_ids"])
+        else:
+            input_text = None
         if not input_text:
             return await call_next(request)
         input_tokens, input_logprobs, input_loss_mask = self.radix_tree.retrieve_from_text(
             input_text, return_logprob=True
         )
         request_json["input_tokens"] = input_tokens
+        request_json["stream"] = False
         request._json = request_json
-        while _ in range(5):
+
+        for _ in range(5):
             response = await call_next(request)
             if (
                 "meta_info" in response
@@ -59,7 +68,6 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                             weight_version=response["meta_info"]["weight_version"],
                         )
                     else:
-                        print("Warning: output token logprobs not in response")
                         generated_token_ids = self.tokenizer(generated_text, add_special_tokens=False)["input_ids"]
                         full_token_ids = input_tokens + generated_token_ids
                         full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)

@@ -145,7 +145,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         retrieve_output = await post(retrieve_url, retrieve_payload)
         sample.tokens = retrieve_output["tokens"]
         sample.loss_mask = retrieve_output["loss_mask"]
-        sample.response_length = get_response_lengths(sample.loss_mask)
+        sample.response_length = get_response_lengths([sample.loss_mask])[0]
         sample.loss_mask = sample.loss_mask[-sample.response_length :]
         sample.rollout_log_probs = retrieve_output["rollout_logp"][-sample.response_length :]
 
