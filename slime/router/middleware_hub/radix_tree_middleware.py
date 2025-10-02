@@ -1,28 +1,26 @@
 from time import sleep
 
-from fastapi import BaseHTTPMiddleware, FastAPI
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from transformers import AutoTokenizer
 
 from .radix_tree import StringRadixTrie
 
 
 class RadixTreeMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: FastAPI, *, router):
+    def __init__(self, app, *, router):
         super().__init__(app)
         self.router = router
         self.args = router.args
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
         self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=self.tokenizer, verbose=False)
-        # expose radix tree on router for route handlers
         self.router.radix_tree = self.radix_tree
 
-    async def dispatch(self, request, call_next):
-        # Example middleware logic using radix tree
+    async def dispatch(self, request: Request, call_next):
         path = request.url.path
         if path != "/generate":
             return await call_next(request)
 
-        # pop "text" from request json and get input tokens from self.radix_tree and then use call_next
         request_json = await request.json()
         input_text = request_json.pop("text", "")
         if not input_text:
@@ -31,7 +29,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             input_text, return_logprob=True
         )
         request_json["input_tokens"] = input_tokens
-        request._json = request_json  # Update the request json
+        request._json = request_json
         while _ in range(5):
             response = await call_next(request)
             if (
@@ -42,15 +40,9 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                 break
             sleep(30)
 
-        # Extract data for radix tree insertion
         if "text" in response and "output_ids" in response:
             generated_text = response["text"]
-            # generated_token_ids = response["output_ids"]
-
-            # Combine input tokens and generated tokens
             full_text = input_text + generated_text
-
-            # Insert the full trajectory into radix tree with current weight version
             if full_text:
                 try:
                     if "output_token_logprobs" in response.get("meta_info", {}):
@@ -71,7 +63,6 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                         generated_token_ids = self.tokenizer(generated_text, add_special_tokens=False)["input_ids"]
                         full_token_ids = input_tokens + generated_token_ids
                         full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
-                        # Use default log probabilities (0.0) if not provided
                         self.radix_tree.insert(
                             full_text,
                             full_token_ids,
@@ -85,5 +76,4 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                 except Exception as e:
                     if getattr(self.router, "verbose", False):
                         print(f"[slime-router] Warning: Failed to cache trajectory: {e}")
-                    # Don't fail the request if caching fails
         return response
