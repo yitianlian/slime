@@ -1,10 +1,55 @@
+import json
 from time import sleep
 
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
 from transformers import AutoTokenizer
 
 from .radix_tree import StringRadixTrie
+
+# Hop-by-hop headers that should not be forwarded
+HOP_BY_HOP = {
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "upgrade",
+}
+
+
+def _filter_headers(headers):
+    """Filter out hop-by-hop headers that should not be forwarded."""
+    return {k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP}
+
+
+async def _materialize_response(resp):
+    """Convert streaming-like Response into a regular Response/JSONResponse safely."""
+    # Collect all bytes from the streaming response
+    body = b""
+    async for chunk in resp.body_iterator:
+        body += chunk
+
+    # Try to parse as JSON based on content-type
+    ct = resp.headers.get("content-type", "")
+    headers = _filter_headers(resp.headers)
+
+    if "application/json" in ct:
+        # If it's JSON, try to parse and return as JSONResponse
+        try:
+            data = json.loads(body.decode("utf-8"))
+            return JSONResponse(content=data, status_code=resp.status_code, headers=headers)
+        except Exception:
+            # JSON parsing failed, fall back to raw bytes
+            pass
+
+    # Other types: return as raw bytes (without content-length)
+    return Response(content=body, status_code=resp.status_code, headers=headers, media_type=resp.media_type)
 
 
 class RadixTreeMiddleware(BaseHTTPMiddleware):
@@ -39,24 +84,53 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         request_json["stream"] = False
         request._json = request_json
 
+        response_data = None
         for _ in range(5):
             response = await call_next(request)
+
+            # If upstream returned a streaming response, materialize it to avoid Content-Length issues
+            if response.__class__.__name__ == "_StreamingResponse":
+                response = await _materialize_response(response)
+            with open("response.txt", "w") as f:
+                f.write(str(type(response)))
+                f.write("\n")
+
+            # Try to parse JSON from the current response for meta inspection
+            try:
+                if hasattr(response, "body") and isinstance(response.body, (bytes, bytearray)):
+                    response_data = json.loads(response.body.decode("utf-8"))
+                elif hasattr(response, "content") and isinstance(response.content, (dict, list)):
+                    response_data = response.content  # JSONResponse.content is already a dict/list
+            except Exception:
+                response_data = None
+            with open("response.txt", "a") as f:
+                f.write(str(type(response)))
+                f.write(json.dumps(response_data))
+                f.write("\n")
+
             if (
-                "meta_info" in response
-                and "finish_reason" in response["meta_info"]
-                and response["meta_info"]["finish_reason"]["type"] != "abort"
+                isinstance(response_data, dict)
+                and "meta_info" in response_data
+                and "finish_reason" in response_data["meta_info"]
+                and response_data["meta_info"]["finish_reason"]["type"] != "abort"
             ):
                 break
             sleep(30)
 
-        if "text" in response and "output_ids" in response:
-            generated_text = response["text"]
+        if isinstance(response_data, dict) and "text" in response_data and "output_ids" in response_data:
+            generated_text = response_data["text"]
+            with open("generated_text.txt", "a") as f:
+                f.write(json.dumps(response_data))
+                f.write("\n")
+
             full_text = input_text + generated_text
             if full_text:
                 try:
-                    if "output_token_logprobs" in response.get("meta_info", {}):
-                        generated_token_logprobs = [item[0] for item in response["meta_info"]["output_token_logprobs"]]
-                        generated_token_ids = [item[1] for item in response["meta_info"]["output_token_logprobs"]]
+                    if "output_token_logprobs" in response_data.get("meta_info", {}):
+                        generated_token_logprobs = [
+                            item[0] for item in response_data["meta_info"]["output_token_logprobs"]
+                        ]
+                        generated_token_ids = [item[1] for item in response_data["meta_info"]["output_token_logprobs"]]
                         full_logprobs = input_logprobs + generated_token_logprobs
                         full_token_ids = input_tokens + generated_token_ids
                         full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
@@ -65,7 +139,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                             full_token_ids,
                             full_logprobs,
                             full_loss_mask,
-                            weight_version=response["meta_info"]["weight_version"],
+                            weight_version=response_data["meta_info"]["weight_version"],
                         )
                     else:
                         generated_token_ids = self.tokenizer(generated_text, add_special_tokens=False)["input_ids"]
@@ -76,7 +150,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                             full_token_ids,
                             None,
                             full_loss_mask,
-                            weight_version=response["meta_info"]["weight_version"],
+                            weight_version=response_data["meta_info"]["weight_version"],
                         )
 
                     if getattr(self.router, "verbose", False):
