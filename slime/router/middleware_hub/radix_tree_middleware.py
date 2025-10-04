@@ -107,6 +107,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                 and response_data["meta_info"]["finish_reason"]["type"] != "abort"
             ):
                 break
+            # await 30 seconds for aborted responses
             sleep(30)
 
         if isinstance(response_data, dict) and "text" in response_data and "output_ids" in response_data:

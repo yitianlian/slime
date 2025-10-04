@@ -576,7 +576,7 @@ class StringRadixTrie:
         for child in node.children:
             self._print_node(child, depth + 1)
 
-    def retrieve_from_text(self, text: str, return_logprob: bool = False):
+    def retrieve_from_text(self, text: str, return_logprob: bool = True):
         """
         Get tokens from text by looking up in radix tree or using tokenizer.
         Also fetches weight version from worker during this operation.
@@ -593,19 +593,15 @@ class StringRadixTrie:
         # If we have a match and it covers the entire text, return the tokens
         if result.matched_prefix and result.token_ids:
             additional_tokens = self.tokenizer(result.remaining_string, add_special_tokens=False)["input_ids"]
-            if return_logprob:
-                return (
-                    result.token_ids + additional_tokens,
-                    result.logp + len(additional_tokens) * [0.0],
-                    result.loss_mask + len(additional_tokens) * [0],
-                )
-            else:
-                return (
-                    result.token_ids + additional_tokens,
-                    [0] * len(result.token_ids + additional_tokens),
-                    result.loss_mask + len(additional_tokens) * [0],
-                )
-
+            return (
+                result.token_ids + additional_tokens,
+                (
+                    result.logp + len(additional_tokens) * [0.0]
+                    if return_logprob
+                    else [0] * len(result.token_ids + additional_tokens)
+                ),
+                result.loss_mask + len(additional_tokens) * [0],
+            )
         # If result is empty and input text is not empty, tokenize with tokenizer
         # This is needed because we cannot get the prompt token id from engine response
         # We have to manually insert the text and token into the tree
@@ -615,11 +611,7 @@ class StringRadixTrie:
             # Insert the text and tokens into the tree
             self.insert(text, tokens)
             # Return the tokens
-            if return_logprob:
-                # Return default logp values (0.0) when using tokenizer
-                return (tokens, [0.0] * len(tokens), [0] * len(tokens))
-            else:
-                return (tokens, [0.0] * len(tokens), [0] * len(tokens))
+            return (tokens, [0.0] * len(tokens), [0] * len(tokens))
         else:
             raise ValueError("Tokenizer or input text can't be empty")
 

@@ -18,7 +18,7 @@ def run_router(args):
     slime_router = SlimeRouter(args, verbose=False)
 
     # Start the server
-    uvicorn.run(slime_router.app, host=args.sglang_router_ip, port=args.sglang_router_port, log_level="debug")
+    uvicorn.run(slime_router.app, host=args.sglang_router_ip, port=args.sglang_router_port, log_level="info")
 
 
 class SlimeRouter:
