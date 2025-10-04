@@ -144,14 +144,11 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         retrieve_payload = {"text": sample.prompt + output["text"], "return_logp": True}
         retrieve_output = await post(retrieve_url, retrieve_payload)
         sample.tokens = retrieve_output["tokens"]
-        print("output text", len(output["text"]))
-        # print("decode token ids", state.tokenizer.decode(retrieve_output["tokens"]))
+        sample.response += output["text"]
         sample.loss_mask = retrieve_output["loss_mask"]
         sample.response_length = get_response_lengths([sample.loss_mask])[0]
-        print("response length", sample.response_length)
         sample.loss_mask = sample.loss_mask[-sample.response_length :]
         sample.rollout_log_probs = retrieve_output["rollout_logp"][-sample.response_length :]
-
     else:
         if "output_token_logprobs" in output["meta_info"]:
             new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]

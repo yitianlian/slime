@@ -91,10 +91,6 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             # If upstream returned a streaming response, materialize it to avoid Content-Length issues
             if response.__class__.__name__ == "_StreamingResponse":
                 response = await _materialize_response(response)
-            with open("response.txt", "w") as f:
-                f.write(str(type(response)))
-                f.write("\n")
-
             # Try to parse JSON from the current response for meta inspection
             try:
                 if hasattr(response, "body") and isinstance(response.body, (bytes, bytearray)):
@@ -103,10 +99,6 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                     response_data = response.content  # JSONResponse.content is already a dict/list
             except Exception:
                 response_data = None
-            with open("response.txt", "a") as f:
-                f.write(str(type(response)))
-                f.write(json.dumps(response_data))
-                f.write("\n")
 
             if (
                 isinstance(response_data, dict)
@@ -119,9 +111,6 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
 
         if isinstance(response_data, dict) and "text" in response_data and "output_ids" in response_data:
             generated_text = response_data["text"]
-            with open("generated_text.txt", "a") as f:
-                f.write(json.dumps(response_data))
-                f.write("\n")
 
             full_text = input_text + generated_text
             if full_text:
