@@ -17,8 +17,6 @@ export PYTHONBUFFERED=16
 
 export CUDA_VISIBLE_DEVICES=4,5,6,7
 
-WANDB_KEY=8920a59faeab83c97b55c3cbe78618f11d0a1821
-
 NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
     HAS_NVLINK=1
@@ -34,7 +32,6 @@ CKPT_ARGS=(
    --hf-checkpoint /root/Qwen/Qwen3-4B-Instruct-2507
    --ref-load /root/Qwen/Qwen3-4B-Instruct-2507_torch_dist
    --rotary-base 5000000
-   # --load /root/GLM-Z1-9B-0414_slime/
    --save /root/qwen3-4b_slime/
    --save-interval 20
 )
@@ -109,6 +106,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    --use-slime-router
+   --slime-router-middleware-paths slime.router.middleware_hub.radix_tree_middleware.RadixTreeMiddleware
 )
 
 MISC_ARGS=(
