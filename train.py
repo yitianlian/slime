@@ -3,6 +3,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGH
 
 from slime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from slime.utils.arguments import parse_args
+from slime.utils.tensorboard_utils import _TensorboardAdapter
 from slime.utils.wandb_utils import init_wandb_primary
 
 
@@ -10,6 +11,9 @@ def train(args):
     # allocate the GPUs
     pgs = create_placement_groups(args)
     wandb_run_id = init_wandb_primary(args)
+
+    if args.use_tensorboard:
+        _TensorboardAdapter(args)
 
     # create the actor and critic models
     actor_model, critic_model = create_training_models(args, pgs, wandb_run_id=wandb_run_id)
@@ -20,6 +24,7 @@ def train(args):
     actor_model.set_rollout_manager(rollout_manager)
 
     if args.offload:
+        ray.get(rollout_manager.offload.remote())
         ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
 
     # always update weight first so that sglang has the loaded weights from training.

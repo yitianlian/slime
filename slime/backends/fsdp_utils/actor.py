@@ -4,10 +4,21 @@ from itertools import accumulate
 import ray
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import ShardingStrategy, StateDictType
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+import logging
+
+
+from torch.distributed.tensor import DTensor
+from packaging import version
+
+# Import FSDP v2 components based on PyTorch version
+if version.parse(torch.__version__) >= version.parse("2.6"):
+    from torch.distributed.fsdp import fully_shard as FSDP
+elif version.parse(torch.__version__) >= version.parse("2.4"):
+    from torch.distributed._composable.fsdp import fully_shard as FSDP
+else:
+    raise ImportError("FSDP v2 not available")
 
 import wandb
 from slime.ray.train_actor import TrainRayActor
@@ -38,6 +49,10 @@ class FSDPTrainRayActor(TrainRayActor):
     def init(self, args, role, wandb_run_id, with_ref: bool = False):  # type: ignore[override]
         super().init(args, role, wandb_run_id, with_ref)
 
+        # Update rank and world_size for wandb secondary initialization (using actual distributed values)
+        args.rank = dist.get_rank()
+        args.world_size = dist.get_world_size()
+
         if dist.get_rank() == 0:
             init_wandb_secondary(args, wandb_run_id)
 
@@ -66,20 +81,8 @@ class FSDPTrainRayActor(TrainRayActor):
         if args.gradient_checkpointing:
             model.gradient_checkpointing_enable()
 
-        # TODO: set correct auto_wrap_policy
-        auto_wrap_policy = None
-
-        self.model = FSDP(
-            model,
-            auto_wrap_policy=auto_wrap_policy,
-            device_id=torch.cuda.current_device(),
-            use_orig_params=True,
-            sharding_strategy=ShardingStrategy[self.args.fsdp_sharding_strategy],
-            cpu_offload=self.args.fsdp_cpu_offload,
-            forward_prefetch=self.args.fsdp_forward_prefetch,
-            backward_prefetch=self.args.fsdp_backward_prefetch,
-            limit_all_gathers=self.args.fsdp_limit_all_gathers,
-        )
+        # Create FSDP v2 model using FSDP
+        self.model = FSDP(model)
 
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -99,9 +102,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.update_cpu_params_dict(self.weights["actor"])
 
-        self.connected = False
         self.weight_updator = (
-            UpdateWeightFromTensor(self.args, self.model)
+            UpdateWeightFromTensor(self.args, self.model, self.weights)
             if self.args.colocate
             else UpdateWeightFromDistributed(self.args, self.model)
         )
@@ -220,6 +222,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     rollout_data["response_lengths"][start:end],
                     rollout_data["advantages"][start:end],
                     rollout_data["returns"][start:end],
+                    rollout_log_probs=rollout_data["rollout_log_probs"][start:end] if "rollout_log_probs" in rollout_data else None,
                     num_packs=mbs_size,
                 )
             )
@@ -316,13 +319,36 @@ class FSDPTrainRayActor(TrainRayActor):
             ppo_kl = old_log_probs.to(device=log_probs.device) - log_probs
             advantages = advantages.to(device=ppo_kl.device)
             pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
+            
+            # Apply TIS before sample mean calculation
+            if self.args.use_tis:
+                # Initialize TIS variables
+                tis = None
+                tis_clipfrac = None
+                ois = None
+                # Apply TIS off-policy correction using importance sampling
+                assert all(
+                    "rollout_log_probs" in batch and 
+                    isinstance(batch["rollout_log_probs"], torch.Tensor) and 
+                    batch["rollout_log_probs"].numel() > 0
+                    for batch in unpacked_batches
+                ), "rollout_log_probs must be provided as non-empty torch.Tensor for TIS"
+                
+                rollout_log_probs = torch.cat([batch["rollout_log_probs"] for batch in unpacked_batches], dim=0)
+                rollout_log_probs = rollout_log_probs.to(device=log_probs.device)
+                
+                tis = torch.exp(old_log_probs - rollout_log_probs)
+                ois = (-ppo_kl).exp()
+                tis_clip = torch.clamp(tis, min=getattr(self.args, 'tis_clip_low', 0.1), max=getattr(self.args, 'tis_clip', 2.0))
+                tis_clipfrac = tis_clip != tis
+                
+                pg_loss = pg_loss * tis_clip
+            
             pg_loss = sum_of_sample_mean(pg_loss, response_lengths, loss_masks)
             pg_clipfrac = sum_of_sample_mean(pg_clipfrac, response_lengths, loss_masks)
             ppo_kl = sum_of_sample_mean(ppo_kl.abs(), response_lengths, loss_masks)
 
             loss = pg_loss
-            if self.args.use_tis:
-                raise NotImplementedError("implement TIS")
 
             if self.args.entropy_coef != 0:
                 raise NotImplementedError("implement entropy bonus")
@@ -349,6 +375,11 @@ class FSDPTrainRayActor(TrainRayActor):
 
             if self.args.use_kl_loss:
                 reported["kl_loss"] = kl_loss.detach()
+                
+            if self.args.use_tis and tis is not None:
+                reported["tis"] = sum_of_sample_mean(tis, response_lengths, loss_masks).detach()
+                reported["ois"] = sum_of_sample_mean(ois, response_lengths, loss_masks).detach()
+                reported["tis_clipfrac"] = sum_of_sample_mean(tis_clipfrac.float(), response_lengths, loss_masks).detach()
 
             # Scale loss for gradient accumulation
             loss = loss * dist.get_world_size() / self.args.global_batch_size
@@ -405,30 +436,44 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if not self.connected:
-            self.connected = True
-            rollout_engines, rollout_engine_lock = ray.get(self.rollout_manager.get_rollout_engines_and_lock.remote())
+        rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
+            self.rollout_manager.get_rollout_engines_and_lock.remote()
+        )
+        if num_new_engines > 0:
             self.weight_updator.connect_rollout_engines(rollout_engines, rollout_engine_lock)
             dist.barrier(group=get_gloo_group())
 
-        if self.args.offload:
-            # TODO: don't wake up here
+        # For colocated mode with sharded updates (full_params=False), 
+        # we don't need to wake up the entire model
+        # The bucket-based approach will load parameters selectively from CPU storage
+        # TODO:  Add bucket optimization for from distributed mode
+        use_bucket_optimization = (
+            self.args.colocate and 
+            not getattr(self.weight_updator, 'full_params', False)
+        )
+        
+        
+        if self.args.offload and not use_bucket_optimization:
+            # Wake up for distributed mode or full_params mode
             self.wake_up(("model"))
 
         with torch_memory_saver.disable() if self.args.offload and not torch.version.hip else nullcontext():
             self.weight_updator.update_weights()
 
-        if self.args.offload:
-            # TODO: don't wake up here
+        if self.args.offload and not use_bucket_optimization:
+            # Sleep for distributed mode or full_params mode
             self.sleep(("model"))
 
     @torch.no_grad()
     def update_cpu_params_dict(self, params_dict):
         """Copy model parameters from GPU to CPU storage dictionary"""
-        with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT):
-            state_dict = self.model.state_dict()
+        
+        state_dict = self.model.state_dict()
 
         for name, param in state_dict.items():
+            if isinstance(param, DTensor):
+                param = param.full_tensor()
+                
             if name not in params_dict:
                 params_dict[name] = torch.empty_like(param, device=torch.device("cpu"), pin_memory=True)
             params_dict[name].copy_(param.detach(), non_blocking=True)
@@ -437,9 +482,9 @@ class FSDPTrainRayActor(TrainRayActor):
     @torch.no_grad()
     def update_gpu_params_dict(self, params_dict):
         """Load parameters from CPU storage dictionary to GPU model"""
-        with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT):
-            gpu_state_dict = {name: param.cuda(non_blocking=True) for name, param in params_dict.items()}
-            self.model.load_state_dict(gpu_state_dict, strict=True)
+        # FSDP v2 doesn't need context managers - load state dict directly
+        gpu_state_dict = {name: param.cuda(non_blocking=True) for name, param in params_dict.items()}
+        self.model.load_state_dict(gpu_state_dict, strict=True)
         torch.cuda.synchronize()
 
     def load_ref_model(self, ref_load_path):
@@ -447,7 +492,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if ref_load_path is None:
             raise ValueError("ref_load_path must be provided when loading reference model")
 
-        print(f"Loading reference model from {ref_load_path}")
 
         current_weights = {}
         self.update_cpu_params_dict(current_weights)
@@ -462,8 +506,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     torch_dtype=torch.bfloat16,
                 )
 
-                with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT):
-                    self.model.load_state_dict(temp_ref_model.state_dict(), strict=True)
+                # FSDP v2 doesn't need context managers - load state dict directly
+                self.model.load_state_dict(temp_ref_model.state_dict(), strict=True)
 
                 del temp_ref_model
                 torch.cuda.empty_cache()
