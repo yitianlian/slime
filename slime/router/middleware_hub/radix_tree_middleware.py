@@ -11,13 +11,23 @@ from .radix_tree import StringRadixTrie
 
 
 def _is_response_aborted(response_data: dict) -> bool:
-    """Check if SGLang response indicates abort."""
-    return (
-        isinstance(response_data, dict)
-        and "meta_info" in response_data
-        and "finish_reason" in response_data["meta_info"]
-        and response_data["meta_info"]["finish_reason"]["type"] == "abort"
-    )
+    """Check if SGLang response indicates abort.
+
+    Performs defensive checks to handle malformed responses gracefully.
+    Returns False for any non-dict or missing/invalid nested fields.
+    """
+    if not isinstance(response_data, dict):
+        return False
+
+    meta_info = response_data.get("meta_info")
+    if not isinstance(meta_info, dict):
+        return False
+
+    finish_reason = meta_info.get("finish_reason")
+    if not isinstance(finish_reason, dict):
+        return False
+
+    return finish_reason.get("type") == "abort"
 
 
 # Hop-by-hop headers that should not be forwarded
@@ -95,8 +105,28 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         return None
 
     async def _retrieve_cache(self, input_text: str) -> tuple:
-        """Responsibility 1: Cache retrieval."""
-        return self.radix_tree.retrieve_from_text(input_text, return_logprob=True)
+        """Responsibility 1: Cache retrieval with error handling.
+
+        Returns:
+            tuple: (rid_list, token_ids, loss_mask) on success, or ([], [], []) on error
+        """
+        try:
+            return self.radix_tree.retrieve_from_text(input_text, return_logprob=True)
+        except ValueError as e:
+            # Specific exception from radix_tree.py:618 - empty tokenizer or text
+            if getattr(self.router, "verbose", False):
+                print(f"[slime-router] Warning: Cache retrieval validation error: {e}")
+            return ([], [], [])
+        except (AttributeError, KeyError) as e:
+            # Data structure access errors
+            if getattr(self.router, "verbose", False):
+                print(f"[slime-router] Warning: Cache retrieval data error: {e}")
+            return ([], [], [])
+        except Exception as e:
+            # Catch-all for unexpected errors
+            if getattr(self.router, "verbose", False):
+                print(f"[slime-router] Warning: Unexpected cache error: {e}")
+            return ([], [], [])
 
     async def _generate_with_retry(
         self, request: Request, call_next
