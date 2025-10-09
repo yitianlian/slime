@@ -6,6 +6,7 @@ pillow
 pylatexenc
 pyyaml
 ray[default]
+tenacity>=8.2.0
 torch
 transformers
 wandb

@@ -345,8 +345,10 @@ class StringRadixTrie:
                 self.cur_cache_size += len(remaining_tokens)
 
         # Update weight version for all traversed nodes
-        if weight_version is not None and new_node:
-            new_node.weight_version = weight_version
+        if weight_version is not None:
+            for node in traversed_nodes:
+                if node.weight_version is None or node.weight_version < weight_version:
+                    node.weight_version = weight_version
 
         return True
 

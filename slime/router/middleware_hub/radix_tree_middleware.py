@@ -1,13 +1,24 @@
 import json
-from time import sleep
 
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from tenacity import AsyncRetrying, RetryError, stop_after_attempt, wait_fixed
 from transformers import AutoTokenizer
 
 from .radix_tree import StringRadixTrie
+
+
+def _is_response_aborted(response_data: dict) -> bool:
+    """Check if SGLang response indicates abort."""
+    return (
+        isinstance(response_data, dict)
+        and "meta_info" in response_data
+        and "finish_reason" in response_data["meta_info"]
+        and response_data["meta_info"]["finish_reason"]["type"] == "abort"
+    )
+
 
 # Hop-by-hop headers that should not be forwarded
 HOP_BY_HOP = {
@@ -61,13 +72,127 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=self.tokenizer, verbose=False)
         self.router.radix_tree = self.radix_tree
 
-    async def dispatch(self, request: Request, call_next):
+    def _parse_response(self, response: Response) -> dict | None:
+        """
+        Extract response_data from FastAPI Response object.
 
+        Handles both JSONResponse (content dict) and Response (body bytes).
+        Returns None if parsing fails.
+
+        Args:
+            response: FastAPI Response object (JSONResponse or Response)
+
+        Returns:
+            dict | None: Parsed response data, or None if parsing fails
+        """
+        try:
+            if hasattr(response, "body") and isinstance(response.body, (bytes, bytearray)):
+                return json.loads(response.body.decode("utf-8"))
+            elif hasattr(response, "content") and isinstance(response.content, dict):
+                return response.content
+        except Exception:
+            pass
+        return None
+
+    async def _retrieve_cache(self, input_text: str) -> tuple:
+        """Responsibility 1: Cache retrieval."""
+        return self.radix_tree.retrieve_from_text(input_text, return_logprob=True)
+
+    async def _generate_with_retry(
+        self, request: Request, call_next
+    ) -> tuple[Response, dict | None]:
+        """
+        Responsibility 2: Generation with retry on abort.
+
+        Uses tenacity for robust retry logic:
+        - Retries up to 5 times (stop_after_attempt)
+        - Waits 30 seconds between retries (wait_fixed)
+        - Raises exception on abort to trigger retry
+        - Returns last response if all retries exhausted
+
+        Returns:
+            tuple[Response, dict | None]: FastAPI Response and parsed dict
+        """
+        # Variables to store last attempt result
+        last_response = None
+        last_response_data = None
+
+        async def _single_attempt() -> tuple[Response, dict | None]:
+            """
+            Single generation attempt.
+
+            Always updates last_response/last_response_data before checking abort.
+            This ensures we have a response even when all retries are exhausted.
+            """
+            nonlocal last_response, last_response_data
+
+            response = await call_next(request)
+
+            # Materialize streaming response
+            if response.__class__.__name__ == "_StreamingResponse":
+                response = await _materialize_response(response)
+
+            # Parse response
+            response_data = self._parse_response(response)
+
+            # Always save the response before potentially raising
+            last_response = response
+            last_response_data = response_data
+
+            # Check if we should retry
+            if response_data and _is_response_aborted(response_data):
+                # Abort detected, signal retry needed
+                raise Exception("SGLang abort - retry needed")
+
+            return (response, response_data)
+
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(5),
+                wait=wait_fixed(30),
+                reraise=False,  # Don't raise RetryError
+            ):
+                with attempt:
+                    await _single_attempt()
+        except RetryError:
+            # All retries exhausted, return last response
+            pass
+
+        return last_response, last_response_data
+
+    async def _insert_cache(
+        self,
+        full_text: str,
+        full_token_ids: list,
+        full_logprobs: list,
+        full_loss_mask: list,
+        weight_version: int,
+    ):
+        """Responsibility 3: Cache insertion."""
+        try:
+            self.radix_tree.insert(
+                full_text,
+                full_token_ids,
+                full_logprobs,
+                full_loss_mask,
+                weight_version=weight_version,
+            )
+            if getattr(self.router, "verbose", False):
+                print(
+                    f"[slime-router] Successfully cached trajectory with {len(full_token_ids)} tokens"
+                )
+        except Exception as e:
+            if getattr(self.router, "verbose", False):
+                print(f"[slime-router] Warning: Failed to cache trajectory: {e}")
+
+    async def dispatch(self, request: Request, call_next):
+        """Main orchestration: Compose 3 responsibilities."""
         path = request.url.path
 
         if path != "/generate":
             return await call_next(request)
 
+        # Parse request
         request_json = await request.json()
         if "text" in request_json:
             input_text = request_json.pop("text", "")
@@ -75,77 +200,59 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             input_text = self.tokenizer.decode(request_json["input_ids"])
         else:
             input_text = None
+
         if not input_text:
             return await call_next(request)
-        input_tokens, input_logprobs, input_loss_mask = self.radix_tree.retrieve_from_text(
-            input_text, return_logprob=True
+
+        # Responsibility 1: Retrieve from cache
+        input_tokens, input_logprobs, input_loss_mask = await self._retrieve_cache(
+            input_text
         )
+
+        # Modify request with cached tokens
         request_json["input_tokens"] = input_tokens
         request_json["stream"] = False
         request._json = request_json
 
-        response_data = None
-        for _ in range(5):
-            response = await call_next(request)
+        # Responsibility 2: Generate with retry
+        response, response_data = await self._generate_with_retry(request, call_next)
 
-            # If upstream returned a streaming response, materialize it to avoid Content-Length issues
-            if response.__class__.__name__ == "_StreamingResponse":
-                response = await _materialize_response(response)
-            # Try to parse JSON from the current response for meta inspection
-            try:
-                if hasattr(response, "body") and isinstance(response.body, (bytes, bytearray)):
-                    response_data = json.loads(response.body.decode("utf-8"))
-                elif hasattr(response, "content") and isinstance(response.content, (dict, list)):
-                    response_data = response.content  # JSONResponse.content is already a dict/list
-            except Exception:
-                response_data = None
-
-            if (
-                isinstance(response_data, dict)
-                and "meta_info" in response_data
-                and "finish_reason" in response_data["meta_info"]
-                and response_data["meta_info"]["finish_reason"]["type"] != "abort"
-            ):
-                break
-            # await 30 seconds for aborted responses
-            sleep(30)
-
-        if isinstance(response_data, dict) and "text" in response_data and "output_ids" in response_data:
+        # Responsibility 3: Insert into cache
+        if (
+            isinstance(response_data, dict)
+            and "text" in response_data
+            and "output_ids" in response_data
+        ):
             generated_text = response_data["text"]
-
             full_text = input_text + generated_text
-            if full_text:
-                try:
-                    if "output_token_logprobs" in response_data.get("meta_info", {}):
-                        generated_token_logprobs = [
-                            item[0] for item in response_data["meta_info"]["output_token_logprobs"]
-                        ]
-                        generated_token_ids = [item[1] for item in response_data["meta_info"]["output_token_logprobs"]]
-                        full_logprobs = input_logprobs + generated_token_logprobs
-                        full_token_ids = input_tokens + generated_token_ids
-                        full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
-                        self.radix_tree.insert(
-                            full_text,
-                            full_token_ids,
-                            full_logprobs,
-                            full_loss_mask,
-                            weight_version=response_data["meta_info"]["weight_version"],
-                        )
-                    else:
-                        generated_token_ids = self.tokenizer(generated_text, add_special_tokens=False)["input_ids"]
-                        full_token_ids = input_tokens + generated_token_ids
-                        full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
-                        self.radix_tree.insert(
-                            full_text,
-                            full_token_ids,
-                            None,
-                            full_loss_mask,
-                            weight_version=response_data["meta_info"]["weight_version"],
-                        )
 
-                    if getattr(self.router, "verbose", False):
-                        print(f"[slime-router] Successfully cached trajectory with {len(full_token_ids)} tokens")
-                except Exception as e:
-                    if getattr(self.router, "verbose", False):
-                        print(f"[slime-router] Warning: Failed to cache trajectory: {e}")
+            if full_text:
+                if "output_token_logprobs" in response_data.get("meta_info", {}):
+                    generated_token_logprobs = [
+                        item[0]
+                        for item in response_data["meta_info"]["output_token_logprobs"]
+                    ]
+                    generated_token_ids = [
+                        item[1]
+                        for item in response_data["meta_info"]["output_token_logprobs"]
+                    ]
+                    full_logprobs = input_logprobs + generated_token_logprobs
+                    full_token_ids = input_tokens + generated_token_ids
+                    full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
+                else:
+                    generated_token_ids = self.tokenizer(
+                        generated_text, add_special_tokens=False
+                    )["input_ids"]
+                    full_token_ids = input_tokens + generated_token_ids
+                    full_logprobs = None
+                    full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
+
+                await self._insert_cache(
+                    full_text,
+                    full_token_ids,
+                    full_logprobs,
+                    full_loss_mask,
+                    weight_version=response_data["meta_info"]["weight_version"],
+                )
+
         return response

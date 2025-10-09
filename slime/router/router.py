@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 
 import httpx
@@ -33,6 +34,9 @@ class SlimeRouter:
         self.worker_urls: dict[str, int] = {}
         self.max_weight_version = None
 
+        # Concurrency control for worker URL selection
+        self._url_lock = asyncio.Lock()
+
         # TODO: remove this hardcode
         self.client = httpx.AsyncClient(
             limits=httpx.Limits(
@@ -57,6 +61,7 @@ class SlimeRouter:
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
         self.app.post("/retrieve_from_text")(self.retrieve_from_text)
+        self.app.get("/metrics")(self.get_metrics)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
@@ -67,7 +72,7 @@ class SlimeRouter:
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
         # Forward all other paths to SGLang router
-        worker_url = self._use_url()
+        worker_url = await self._use_url()
         url = f"{worker_url}/{path}"
         # print("path",path)
 
@@ -98,7 +103,7 @@ class SlimeRouter:
                 )
 
         finally:
-            self._finish_url(worker_url)
+            await self._finish_url(worker_url)
 
     async def add_worker(self, request: Request):
         """Add a new worker to the router.
@@ -133,6 +138,26 @@ class SlimeRouter:
         """List all registered workers"""
         return {"urls": list(self.worker_urls.keys())}
 
+    async def get_metrics(self, request: Request):
+        """GET /metrics - Return router and cache metrics."""
+        metrics = {
+            "router": {
+                "active_workers": len(self.worker_urls),
+                "worker_loads": dict(self.worker_urls),
+                "total_in_flight": sum(self.worker_urls.values()),
+            }
+        }
+
+        if hasattr(self, "radix_tree"):
+            cache_stats = self.radix_tree.get_stats()
+            # Estimate memory usage (16 bytes per token ID)
+            cache_stats["cache_size_mb"] = (
+                cache_stats["cur_cache_size"] * 16 / 1024 / 1024
+            )
+            metrics["cache"] = cache_stats
+
+        return JSONResponse(content=metrics)
+
     async def retrieve_from_text(self, request: Request):
         """Get token information from text input"""
         body = await request.body()
@@ -159,20 +184,32 @@ class SlimeRouter:
 
         return result
 
-    def _use_url(self):
-        """Select a worker URL using round-robin strategy"""
-        assert len(self.worker_urls) > 0, "No workers available"
+    async def _use_url(self):
+        """
+        Select a worker URL using round-robin strategy.
 
-        # get the url with mininal count
-        url = min(self.worker_urls, key=self.worker_urls.get)
-        self.worker_urls[url] += 1
-        return url
+        Thread-safe: Uses asyncio.Lock to prevent race conditions when multiple
+        concurrent requests select workers simultaneously.
+        """
+        async with self._url_lock:
+            assert len(self.worker_urls) > 0, "No workers available"
 
-    def _finish_url(self, url):
-        """Mark the request to the given URL as finished"""
-        assert url in self.worker_urls, f"URL {url} not recognized"
-        self.worker_urls[url] -= 1
-        assert self.worker_urls[url] >= 0, f"URL {url} count went negative"
+            # get the url with mininal count
+            url = min(self.worker_urls, key=self.worker_urls.get)
+            self.worker_urls[url] += 1
+            return url
+
+    async def _finish_url(self, url):
+        """
+        Mark the request to the given URL as finished.
+
+        Thread-safe: Uses asyncio.Lock to prevent race conditions when decrementing
+        worker counts.
+        """
+        async with self._url_lock:
+            assert url in self.worker_urls, f"URL {url} not recognized"
+            self.worker_urls[url] -= 1
+            assert self.worker_urls[url] >= 0, f"URL {url} count went negative"
 
 
 if __name__ == "__main__":
