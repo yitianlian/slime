@@ -107,23 +107,69 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
     async def _retrieve_cache(self, input_text: str) -> tuple:
         """Responsibility 1: Cache retrieval with error handling.
 
+        Uses async find_longest_prefix for better concurrency performance.
+        Falls back to tokenizer for unmatched portions.
+
         Returns:
             tuple: (rid_list, token_ids, loss_mask) on success, or ([], [], []) on error
         """
         try:
-            return self.radix_tree.retrieve_from_text(input_text, return_logprob=True)
+            # Use async find_longest_prefix for better concurrency
+            result = await self.radix_tree.find_longest_prefix_async(input_text)
+
+            # If we have a match and it covers the entire text, return the tokens
+            if result.matched_prefix and result.token_ids:
+                additional_tokens = self.tokenizer(result.remaining_string, add_special_tokens=False)["input_ids"]
+                return (
+                    result.token_ids + additional_tokens,
+                    (
+                        result.logp + len(additional_tokens) * [0.0]
+                        if result.logp is not None
+                        else [0] * len(result.token_ids + additional_tokens)
+                    ),
+                    result.loss_mask + len(additional_tokens) * [0],
+                )
+            # If result is empty and input text is not empty, tokenize with tokenizer
+            # This is needed because we cannot get the prompt token id from engine response
+            # We have to manually insert the text and token into the tree
+            if self.tokenizer and input_text:
+                # Tokenize the text using the provided tokenizer
+                tokens = self.tokenizer(input_text, add_special_tokens=False)["input_ids"]
+                return tokens, [0.0] * len(tokens), [0] * len(tokens)
+            else:
+                return [], [], []
         except ValueError as e:
+            # Phase 2 TODO: Implement structured error handling with security validation
             # Specific exception from radix_tree.py:618 - empty tokenizer or text
+            # Should implement:
+            # - Input validation and sanitization
+            # - Error categorization (validation vs system errors)
+            # - Security audit logging for suspicious inputs
+            # - Rate limiting for repeated validation failures
             if getattr(self.router, "verbose", False):
                 print(f"[slime-router] Warning: Cache retrieval validation error: {e}")
             return ([], [], [])
         except (AttributeError, KeyError) as e:
-            # Data structure access errors
+            # Phase 2 TODO: Implement secure exception handling for data structure errors
+            # Data structure access errors could indicate:
+            # - Corruption attacks
+            # - Memory issues
+            # - Race conditions
+            # Should implement:
+            # - Data integrity validation
+            # - Automatic recovery mechanisms
+            # - Security incident logging
             if getattr(self.router, "verbose", False):
                 print(f"[slime-router] Warning: Cache retrieval data error: {e}")
             return ([], [], [])
         except Exception as e:
-            # Catch-all for unexpected errors
+            # Phase 2 TODO: Implement comprehensive exception handling and monitoring
+            # Catch-all for unexpected errors - should implement:
+            # - Error classification and prioritization
+            # - Circuit breaker pattern for cascade failures
+            # - Detailed error logging with context
+            # - Health check integration
+            # - Graceful degradation strategies
             if getattr(self.router, "verbose", False):
                 print(f"[slime-router] Warning: Unexpected cache error: {e}")
             return ([], [], [])
@@ -197,10 +243,17 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         full_logprobs: list,
         full_loss_mask: list,
         weight_version: int,
-    ):
-        """Responsibility 3: Cache insertion."""
+    ) -> bool:
+        """Responsibility 3: Cache insertion.
+
+        Uses async insert for better concurrency performance.
+
+        Returns:
+            bool: True if insertion was successful, False otherwise
+        """
         try:
-            self.radix_tree.insert(
+            # Use async insert for better concurrency
+            result = await self.radix_tree.insert_async(
                 full_text,
                 full_token_ids,
                 full_logprobs,
@@ -208,12 +261,19 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                 weight_version=weight_version,
             )
             if getattr(self.router, "verbose", False):
-                print(
-                    f"[slime-router] Successfully cached trajectory with {len(full_token_ids)} tokens"
-                )
+                if result:
+                    print(
+                        f"[slime-router] Successfully cached trajectory with {len(full_token_ids)} tokens"
+                    )
+                else:
+                    print(
+                        f"[slime-router] Failed to cache trajectory with {len(full_token_ids)} tokens (empty text or validation failed)"
+                    )
+            return result
         except Exception as e:
             if getattr(self.router, "verbose", False):
                 print(f"[slime-router] Warning: Failed to cache trajectory: {e}")
+            return False
 
     async def dispatch(self, request: Request, call_next):
         """Main orchestration: Compose 3 responsibilities."""
@@ -274,7 +334,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                         generated_text, add_special_tokens=False
                     )["input_ids"]
                     full_token_ids = input_tokens + generated_token_ids
-                    full_logprobs = None
+                    full_logprobs = [0.0] * len(full_token_ids)  # Default logprobs when not available
                     full_loss_mask = input_loss_mask + [1] * len(generated_token_ids)
 
                 await self._insert_cache(

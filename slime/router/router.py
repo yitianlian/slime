@@ -93,8 +93,14 @@ class SlimeRouter:
                     status_code=response.status_code,
                     headers=dict(response.headers),
                 )
-            except Exception:
-                # Fall back to raw body with original content type
+            except Exception as e:
+                # Phase 2 TODO: Implement secure exception handling with proper error categorization
+                # Currently falls back to raw body, should implement:
+                # - Malformed JSON detection and specific error messages
+                # - Content-type validation with security checks
+                # - Structured error responses with error codes
+                # - Rate limiting for error responses
+                # - Security: prevent error information leakage
                 return Response(
                     content=content,
                     status_code=response.status_code,
@@ -149,6 +155,8 @@ class SlimeRouter:
         }
 
         if hasattr(self, "radix_tree"):
+            # Phase 1 TODO: migrate to async get_stats() when radix_tree is fully async
+            # For now, use sync version but this blocks the event loop briefly
             cache_stats = self.radix_tree.get_stats()
             # Estimate memory usage (16 bytes per token ID)
             cache_stats["cache_size_mb"] = (

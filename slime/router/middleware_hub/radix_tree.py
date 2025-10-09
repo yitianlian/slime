@@ -5,10 +5,13 @@ String-based Radix Trie for efficient prefix matching and token caching.
 Optimized for string prefixes with corresponding token IDs.
 """
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+from .async_read_write_lock import AsyncReadWriteLock, read_lock, write_lock
 
 
 @dataclass
@@ -130,7 +133,10 @@ class StringRadixTrie:
         self.cur_cache_size = 0  # Total number of token IDs across all nodes
 
         # Thread safety
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # Keep for backward compatibility
+
+        # Async read-write lock for better performance
+        self._async_lock = AsyncReadWriteLock(debug=False)
 
     def find_longest_prefix(self, text: str) -> MatchResult:
         """
@@ -197,6 +203,82 @@ class StringRadixTrie:
                 self.pretty_print()
 
             return result
+
+    async def find_longest_prefix_async(self, text: str) -> MatchResult:
+        """
+        Async version of find_longest_prefix for better concurrency.
+        Uses read-write lock to allow concurrent reads.
+        Args:
+            text: Input string to find prefix for
+        Returns:
+            MatchResult containing matched prefix, token IDs, logp, and remaining string
+        """
+        async with read_lock(self._async_lock):
+            # Call the original sync method logic without the RLock
+            # Temporarily disable the original lock to avoid double locking
+            original_lock = self._lock
+            self._lock = None  # Temporarily disable RLock
+
+            try:
+                result = self._find_longest_prefix_internal(text)
+            finally:
+                self._lock = original_lock  # Restore original lock
+
+            return result
+
+    def _find_longest_prefix_internal(self, text: str) -> MatchResult:
+        """Internal find_longest_prefix logic without any locks."""
+        if not text:
+            return MatchResult("", [], [], [], text, self.root)
+
+        matched_tokens = []
+        matched_logp = []
+        matched_loss_mask = []
+
+        current_node = self.root
+        matched_prefix = ""
+        remaining_text = text
+
+        while remaining_text:
+            best_child = None
+            best_key_len = 0
+
+            # Find child with longest prefix match
+            for child_node in current_node.children:
+                if remaining_text.startswith(child_node.string_key):
+                    if len(child_node.string_key) > best_key_len:
+                        best_child = child_node
+                        best_key_len = len(child_node.string_key)
+
+            if best_child is None:
+                # No complete startswith match found
+                break
+
+            # Move to the best matching child
+            best_child.touch()
+            current_node = best_child
+            matched_prefix += best_child.string_key
+            remaining_text = remaining_text[best_key_len:]
+
+            # Accumulate tokens, logp, and loss_mask from this node
+            if best_child.has_value:
+                matched_tokens.extend(best_child.token_ids)
+                matched_logp.extend(best_child.logp)
+                if best_child.loss_mask is not None:
+                    matched_loss_mask.extend(best_child.loss_mask)
+                else:
+                    # If no loss_mask is stored, create default mask same as logp
+                    matched_loss_mask.extend([1] * len(best_child.token_ids))
+                self.cache_hits += 1
+
+        if not matched_tokens:
+            self.cache_misses += 1
+
+        result = MatchResult(
+            matched_prefix, matched_tokens, matched_logp, matched_loss_mask, remaining_text, current_node
+        )
+
+        return result
 
     def insert(
         self,
@@ -272,6 +354,102 @@ class StringRadixTrie:
                 self.pretty_print()
 
             return result
+
+    async def insert_async(
+        self,
+        text: str,
+        token_ids: List[int],
+        logp: Optional[List[float]] = None,
+        loss_mask: Optional[List[int]] = None,
+        weight_version: Optional[int] = None,
+    ) -> bool:
+        """
+        Async version of insert for better concurrency.
+        Uses write lock to ensure exclusive access during modifications.
+        Args:
+            text: String to insert
+            token_ids: Corresponding token IDs
+            logp: Corresponding log probabilities (must match token_ids length)
+            loss_mask: Corresponding loss mask for model generation parts (must match token_ids length)
+            weight_version: Optional weight version for this insertion
+        Returns:
+            True if insertion was successful
+        """
+        async with write_lock(self._async_lock):
+            # Temporarily disable the original lock to avoid double locking
+            original_lock = self._lock
+            self._lock = None  # Temporarily disable RLock
+
+            try:
+                result = self._insert_internal(text, token_ids, logp, loss_mask, weight_version)
+            finally:
+                self._lock = original_lock  # Restore original lock
+
+            return result
+
+    def _insert_internal(
+        self,
+        text: str,
+        token_ids: List[int],
+        logp: Optional[List[float]] = None,
+        loss_mask: Optional[List[int]] = None,
+        weight_version: Optional[int] = None,
+    ) -> bool:
+        """Internal insert logic without any locks."""
+        if not text or not token_ids:
+            if self.verbose:
+                print("[RadixTree] Insertion failed: text or token_ids is empty")
+            return False
+
+        # Use provided weight version
+        current_weight_version = weight_version
+
+        # Validate logp consistency
+        if logp is not None and len(logp) != len(token_ids):
+            if self.verbose:
+                print(
+                    f"[WARNING] Logp length {len(logp)} does not match token length {len(token_ids)} for text: {text}"
+                )
+                print(f"[WARNING] Logp: {logp}")
+                print(f"[WARNING] Token IDs: {token_ids}")
+            return False
+
+        # Validate loss_mask consistency
+        if loss_mask is not None and len(loss_mask) != len(token_ids):
+            if self.verbose:
+                print(
+                    f"[WARNING] Loss mask length {len(loss_mask)} does not match token length {len(token_ids)} for text: {text}"
+                )
+                print(f"[WARNING] Loss mask: {loss_mask}")
+                print(f"[WARNING] Token IDs: {token_ids}")
+            return False
+
+        # If logp is not provided, create default values (0.0)
+        if logp is None:
+            logp = [0.0] * len(token_ids)
+
+        # If loss_mask is not provided, create default values (1 for model generation parts)
+        if loss_mask is None:
+            loss_mask = [0] * len(token_ids)
+
+        result = self._insert(text, token_ids, logp, loss_mask, current_weight_version)
+
+        # Check if GC should be triggered after insert
+        if self.cur_cache_size > self.max_cache_size and weight_version is not None:
+            if self.verbose:
+                print(
+                    f"[RadixTree] Cache size {self.cur_cache_size} exceeds limit {self.max_cache_size}, triggering GC"
+                )
+            gc_removed = self.gc_by_weight_version(weight_version)
+            if self.verbose:
+                print(f"[RadixTree] GC removed {gc_removed} nodes, new cache size: {self.cur_cache_size}")
+
+        # Print tree structure if verbose is enabled
+        if self.verbose:
+            print("Tree structure after insert:")
+            self.pretty_print()
+
+        return result
 
     def _insert(
         self,
@@ -442,6 +620,15 @@ class StringRadixTrie:
         """
         Perform garbage collection based on weight version.
         Remove nodes with weight_version < (current_weight_version - gc_threshold_k).
+
+        Phase 3 TODO: Implement hybrid GC strategy with:
+        - LRU eviction for frequently accessed entries
+        - Memory pressure monitoring and adaptive thresholds
+        - Background GC with incremental processing
+        - GC heuristics based on access patterns and cache hit rates
+        - Memory usage tracking and reporting
+        - Configurable GC policies (size-based, time-based, access-based)
+
         Args:
             current_weight_version: Current weight version to use for GC threshold
         Returns:
