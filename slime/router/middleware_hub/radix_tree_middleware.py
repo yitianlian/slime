@@ -7,6 +7,8 @@ from starlette.responses import Response
 from tenacity import AsyncRetrying, RetryError, stop_after_attempt, wait_fixed
 from transformers import AutoTokenizer
 
+from slime.router.component_registry import ComponentRegistry
+
 from .radix_tree import StringRadixTrie
 
 
@@ -74,13 +76,73 @@ async def _materialize_response(resp):
 
 
 class RadixTreeMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, *, router):
+    def __init__(self, app, *, router, component_registry=None):
         super().__init__(app)
         self.router = router
         self.args = router.args
-        self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
-        self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=self.tokenizer, verbose=False)
+
+        # Determine which component registry to use
+        if component_registry is not None:
+            self.component_registry = component_registry
+        else:
+            # Use router's thread-safe component registry
+            self.component_registry = router.get_component_registry()
+
+        # Check required parameters
+        if not hasattr(self.args, 'hf_checkpoint') or not self.args.hf_checkpoint:
+            raise ValueError(
+                "Missing required argument: --hf-checkpoint. "
+                "Please specify the HuggingFace model checkpoint for tokenizer."
+            )
+
+        # Check if components are already registered to avoid duplicate initialization
+        if self.component_registry.has("tokenizer") and self.component_registry.has("radix_tree"):
+            # Use existing components
+            self.tokenizer = self.component_registry.get("tokenizer")
+            self.radix_tree = self.component_registry.get("radix_tree")
+            if getattr(self.router, 'verbose', False) or getattr(self.args, 'verbose', False):
+                print(f"[slime-router] RadixTreeMiddleware using existing components:")
+                print(f"  - Component registry: existing")
+        else:
+            # Initialize components only if not already registered
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.args.hf_checkpoint,
+                    trust_remote_code=True
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load tokenizer from checkpoint '{self.args.hf_checkpoint}': {e}"
+                )
+
+            # Create radix tree with unified verbose configuration
+            router_verbose = getattr(self.router, 'verbose', False) or getattr(self.args, 'verbose', False)
+            self.radix_tree = StringRadixTrie(
+                max_cache_size=getattr(self.args, 'radix_tree_max_size', 10000),
+                tokenizer=self.tokenizer,
+                verbose=router_verbose
+            )
+
+            # Thread-safe component registration
+            self.component_registry.register("tokenizer", self.tokenizer)
+            self.component_registry.register("radix_tree", self.radix_tree)
+
+            if getattr(self.router, 'verbose', False) or getattr(self.args, 'verbose', False):
+                print(f"[slime-router] RadixTreeMiddleware initialized new components:")
+                print(f"  - Tokenizer: {self.args.hf_checkpoint}")
+                print(f"  - Max cache size: {getattr(self.args, 'radix_tree_max_size', 10000)}")
+                print(f"  - Verbose: {router_verbose}")
+                print(f"  - Component registry: created")
+
+        # Maintain backward compatibility
         self.router.radix_tree = self.radix_tree
+
+        if getattr(self.router, 'verbose', False) or getattr(self.args, 'verbose', False):
+            print(f"[slime-router] RadixTreeMiddleware initialized:")
+            print(f"  - Tokenizer: {self.args.hf_checkpoint}")
+            print(f"  - Max cache size: {getattr(self.args, 'radix_tree_max_size', 10000)}")
+            print(f"  - Verbose: {getattr(self.router, 'verbose', False) or getattr(self.args, 'verbose', False)}")
+            print(f"  - Component registry: {'provided' if component_registry is not None else 'created'}")
 
     def _parse_response(self, response: Response) -> dict | None:
         """
@@ -107,37 +169,15 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
     async def _retrieve_cache(self, input_text: str) -> tuple:
         """Responsibility 1: Cache retrieval with error handling.
 
-        Uses async find_longest_prefix for better concurrency performance.
-        Falls back to tokenizer for unmatched portions.
+        Calls radix tree async interface for consistent text→token_ids mapping.
+        Returns version-aligned 4-tuple.
 
         Returns:
-            tuple: (rid_list, token_ids, loss_mask) on success, or ([], [], []) on error
+            tuple: (token_ids, logp, loss_mask, generation_versions) on success, or ([], [], [], []) on error
         """
         try:
-            # Use async find_longest_prefix for better concurrency
-            result = await self.radix_tree.find_longest_prefix_async(input_text)
-
-            # If we have a match and it covers the entire text, return the tokens
-            if result.matched_prefix and result.token_ids:
-                additional_tokens = self.tokenizer(result.remaining_string, add_special_tokens=False)["input_ids"]
-                return (
-                    result.token_ids + additional_tokens,
-                    (
-                        result.logp + len(additional_tokens) * [0.0]
-                        if result.logp is not None
-                        else [0] * len(result.token_ids + additional_tokens)
-                    ),
-                    result.loss_mask + len(additional_tokens) * [0],
-                )
-            # If result is empty and input text is not empty, tokenize with tokenizer
-            # This is needed because we cannot get the prompt token id from engine response
-            # We have to manually insert the text and token into the tree
-            if self.tokenizer and input_text:
-                # Tokenize the text using the provided tokenizer
-                tokens = self.tokenizer(input_text, add_special_tokens=False)["input_ids"]
-                return tokens, [0.0] * len(tokens), [0] * len(tokens)
-            else:
-                return [], [], []
+            # Use the new async interface for consistent tokenization
+            return await self.radix_tree.get_or_create_tokenization_async(input_text)
         except ValueError as e:
             # Phase 2 TODO: Implement structured error handling with security validation
             # Specific exception from radix_tree.py:618 - empty tokenizer or text
@@ -148,7 +188,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             # - Rate limiting for repeated validation failures
             if getattr(self.router, "verbose", False):
                 print(f"[slime-router] Warning: Cache retrieval validation error: {e}")
-            return ([], [], [])
+            return ([], [], [], [])
         except (AttributeError, KeyError) as e:
             # Phase 2 TODO: Implement secure exception handling for data structure errors
             # Data structure access errors could indicate:
@@ -161,7 +201,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             # - Security incident logging
             if getattr(self.router, "verbose", False):
                 print(f"[slime-router] Warning: Cache retrieval data error: {e}")
-            return ([], [], [])
+            return ([], [], [], [])
         except Exception as e:
             # Phase 2 TODO: Implement comprehensive exception handling and monitoring
             # Catch-all for unexpected errors - should implement:
@@ -172,7 +212,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             # - Graceful degradation strategies
             if getattr(self.router, "verbose", False):
                 print(f"[slime-router] Warning: Unexpected cache error: {e}")
-            return ([], [], [])
+            return ([], [], [], [])
 
     async def _generate_with_retry(
         self, request: Request, call_next
@@ -295,7 +335,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Responsibility 1: Retrieve from cache
-        input_tokens, input_logprobs, input_loss_mask = await self._retrieve_cache(
+        input_tokens, input_logprobs, input_loss_mask, _ = await self._retrieve_cache(
             input_text
         )
 

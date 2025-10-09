@@ -674,6 +674,18 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
                 default="",
             )
+            parser.add_argument(
+                "--enable-openai-chat-completion",
+                action="store_true",
+                default=False,
+                help="Enable OpenAI-compatible Chat Completion API endpoint",
+            )
+            parser.add_argument(
+                "--radix-tree-max-size",
+                type=int,
+                default=10000,
+                help="Maximum cache size for RadixTree (default: 10000)",
+            )
             return parser
 
         # wandb
