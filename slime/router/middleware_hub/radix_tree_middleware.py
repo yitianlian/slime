@@ -1,4 +1,5 @@
 import json
+from typing import List, Dict, Optional
 
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -166,17 +167,19 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             pass
         return None
 
-    async def _retrieve_cache(self, input_text: str) -> tuple:
-        """Responsibility 1: Cache retrieval with error handling.
+    async def query_cache_by_text(self, input_text: str) -> tuple:
+        """
+        Query cache by text input, equivalent to get_or_create_tokenization_async semantics.
 
-        Calls radix tree async interface for consistent text→token_ids mapping.
-        Returns version-aligned 4-tuple.
+        Args:
+            input_text: Input text string to query from cache
 
         Returns:
-            tuple: (token_ids, logp, loss_mask, generation_versions) on success, or ([], [], [], []) on error
+            tuple: (token_ids, logp, loss_mask, generation_versions)
+                   with format consistent to get_or_create_tokenization_async
+                   Returns ([], [], [], []) on error
         """
         try:
-            # Use the new async interface for consistent tokenization
             return await self.radix_tree.get_or_create_tokenization_async(input_text)
         except ValueError as e:
             # Phase 2 TODO: Implement structured error handling with security validation
@@ -187,7 +190,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             # - Security audit logging for suspicious inputs
             # - Rate limiting for repeated validation failures
             if getattr(self.router, "verbose", False):
-                print(f"[slime-router] Warning: Cache retrieval validation error: {e}")
+                print(f"[slime-router] Warning: Text cache query validation error: {e}")
             return ([], [], [], [])
         except (AttributeError, KeyError) as e:
             # Phase 2 TODO: Implement secure exception handling for data structure errors
@@ -200,7 +203,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             # - Automatic recovery mechanisms
             # - Security incident logging
             if getattr(self.router, "verbose", False):
-                print(f"[slime-router] Warning: Cache retrieval data error: {e}")
+                print(f"[slime-router] Warning: Text cache query data error: {e}")
             return ([], [], [], [])
         except Exception as e:
             # Phase 2 TODO: Implement comprehensive exception handling and monitoring
@@ -211,7 +214,54 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             # - Health check integration
             # - Graceful degradation strategies
             if getattr(self.router, "verbose", False):
-                print(f"[slime-router] Warning: Unexpected cache error: {e}")
+                print(f"[slime-router] Warning: Unexpected text cache query error: {e}")
+            return ([], [], [], [])
+
+    async def query_cache_by_messages_template(
+        self,
+        messages: List[Dict],
+        tools: Optional[List] = None,
+        add_generation_prompt: bool = True
+    ) -> tuple:
+        """
+        Query cache by messages template using tokenizer.apply_chat_template.
+
+        This method converts OpenAI-format messages to text using tokenizer.apply_chat_template
+        and then queries the radix tree cache, enabling semantic caching for chat completions.
+
+        Args:
+            messages: OpenAI format messages list, e.g., [{"role": "user", "content": "..."}]
+            tools: Optional list of tool definitions for function calling
+            add_generation_prompt: Whether to add generation prompt for model continuation
+                - True: Prepare for model generation (default for Chat Completion)
+                - False: For cache lookup only, no generation prompt
+
+        Returns:
+            tuple: (token_ids, logp, loss_mask, generation_versions)
+                   with format consistent to get_or_create_tokenization_async
+                   Returns ([], [], [], []) on error
+        """
+        try:
+            # Convert messages to text using tokenizer.apply_chat_template
+            # This enables semantic caching based on conversation content rather than raw text
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                tools=tools,
+                add_generation_prompt=add_generation_prompt,
+                tokenize=False  # Return string, not tokenized
+            )
+
+            if not text or not text.strip():
+                if getattr(self.router, "verbose", False):
+                    print(f"[slime-router] Warning: Messages template resulted in empty text")
+                return ([], [], [], [])
+
+            # Reuse existing radix tree cache infrastructure
+            return await self.radix_tree.get_or_create_tokenization_async(text)
+
+        except Exception as e:
+            if getattr(self.router, "verbose", False):
+                print(f"[slime-router] Warning: Messages template cache query error: {e}")
             return ([], [], [], [])
 
     async def _generate_with_retry(
@@ -335,7 +385,7 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Responsibility 1: Retrieve from cache
-        input_tokens, input_logprobs, input_loss_mask, _ = await self._retrieve_cache(
+        input_tokens, input_logprobs, input_loss_mask, _ = await self.query_cache_by_text(
             input_text
         )
 
