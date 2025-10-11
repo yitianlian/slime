@@ -5,10 +5,13 @@ String-based Radix Trie for efficient prefix matching and token caching.
 Optimized for string prefixes with corresponding token IDs.
 """
 
+import asyncio
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from .async_read_write_lock import AsyncReadWriteLock, read_lock, write_lock
 
 
 @dataclass
@@ -21,6 +24,7 @@ class MatchResult:
     loss_mask: List[int]  # Added loss mask for model generation parts
     remaining_string: str
     last_node: "StringTreeNode"
+    generation_versions: List[int] = field(default_factory=list)  # Generation version for each token (aligned with token_ids)
 
 
 class StringTreeNode:
@@ -47,7 +51,8 @@ class StringTreeNode:
         self.ref_count = 0
 
         # Weight version tracking
-        self.weight_version: Optional[int] = None  # Weight version for this node
+        self.weight_version: Optional[int] = None    # Generation version (when tokens were created)
+        self.traverse_version: Optional[int] = None  # Traverse version (for GC control)
 
         # Node identification
         self.id = StringTreeNode.counter if node_id is None else node_id
@@ -130,7 +135,10 @@ class StringRadixTrie:
         self.cur_cache_size = 0  # Total number of token IDs across all nodes
 
         # Thread safety
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # Keep for backward compatibility
+
+        # Async read-write lock for better performance
+        self._async_lock = AsyncReadWriteLock(debug=False)
 
     def find_longest_prefix(self, text: str) -> MatchResult:
         """
@@ -142,11 +150,12 @@ class StringRadixTrie:
         """
         with self._lock:
             if not text:
-                return MatchResult("", [], [], [], text, self.root)
+                return MatchResult("", [], [], [], text, self.root, generation_versions=[])
 
             matched_tokens = []
             matched_logp = []
             matched_loss_mask = []
+            matched_generation_versions = []
             matched_prefix = ""
             current_node = self.root
             remaining_text = text
@@ -173,7 +182,7 @@ class StringRadixTrie:
                 matched_prefix += best_child.string_key
                 remaining_text = remaining_text[best_key_len:]
 
-                # Accumulate tokens, logp, and loss_mask from this node
+                # Accumulate tokens, logp, loss_mask, and generation versions from this node
                 if best_child.has_value:
                     matched_tokens.extend(best_child.token_ids)
                     matched_logp.extend(best_child.logp)
@@ -182,13 +191,19 @@ class StringRadixTrie:
                     else:
                         # If no loss_mask is stored, create default mask same as logp
                         matched_loss_mask.extend([1] * len(best_child.token_ids))
+
+                    # Collect generation version info (aligned with token_ids)
+                    generation_version = best_child.weight_version if best_child.weight_version is not None else -1
+                    matched_generation_versions.extend([generation_version] * len(best_child.token_ids))
+
                     self.cache_hits += 1
 
             if not matched_tokens:
                 self.cache_misses += 1
 
             result = MatchResult(
-                matched_prefix, matched_tokens, matched_logp, matched_loss_mask, remaining_text, current_node
+                matched_prefix, matched_tokens, matched_logp, matched_loss_mask, remaining_text, current_node,
+                generation_versions=matched_generation_versions
             )
 
             # Print tree structure if verbose is enabled
@@ -197,6 +212,89 @@ class StringRadixTrie:
                 self.pretty_print()
 
             return result
+
+    async def find_longest_prefix_async(self, text: str) -> MatchResult:
+        """
+        Async version of find_longest_prefix for better concurrency.
+        Uses read-write lock to allow concurrent reads.
+        Args:
+            text: Input string to find prefix for
+        Returns:
+            MatchResult containing matched prefix, token IDs, logp, and remaining string
+        """
+        async with read_lock(self._async_lock):
+            # Call the original sync method logic without the RLock
+            # Temporarily disable the original lock to avoid double locking
+            original_lock = self._lock
+            self._lock = None  # Temporarily disable RLock
+
+            try:
+                result = self._find_longest_prefix_internal(text)
+            finally:
+                self._lock = original_lock  # Restore original lock
+
+            return result
+
+    def _find_longest_prefix_internal(self, text: str) -> MatchResult:
+        """Internal find_longest_prefix logic without any locks."""
+        if not text:
+            return MatchResult("", [], [], [], text, self.root, generation_versions=[])
+
+        matched_tokens = []
+        matched_logp = []
+        matched_loss_mask = []
+        matched_generation_versions = []
+
+        current_node = self.root
+        matched_prefix = ""
+        remaining_text = text
+
+        while remaining_text:
+            best_child = None
+            best_key_len = 0
+
+            # Find child with longest prefix match
+            for child_node in current_node.children:
+                if remaining_text.startswith(child_node.string_key):
+                    if len(child_node.string_key) > best_key_len:
+                        best_child = child_node
+                        best_key_len = len(child_node.string_key)
+
+            if best_child is None:
+                # No complete startswith match found
+                break
+
+            # Move to the best matching child
+            best_child.touch()
+            current_node = best_child
+            matched_prefix += best_child.string_key
+            remaining_text = remaining_text[best_key_len:]
+
+            # Accumulate tokens, logp, loss_mask, and generation versions from this node
+            if best_child.has_value:
+                matched_tokens.extend(best_child.token_ids)
+                matched_logp.extend(best_child.logp)
+                if best_child.loss_mask is not None:
+                    matched_loss_mask.extend(best_child.loss_mask)
+                else:
+                    # If no loss_mask is stored, create default mask same as logp
+                    matched_loss_mask.extend([1] * len(best_child.token_ids))
+
+                # Collect generation version info (aligned with token_ids)
+                generation_version = best_child.weight_version if best_child.weight_version is not None else -1
+                matched_generation_versions.extend([generation_version] * len(best_child.token_ids))
+
+                self.cache_hits += 1
+
+        if not matched_tokens:
+            self.cache_misses += 1
+
+        result = MatchResult(
+            matched_prefix, matched_tokens, matched_logp, matched_loss_mask, remaining_text, current_node,
+            generation_versions=matched_generation_versions
+        )
+
+        return result
 
     def insert(
         self,
@@ -273,6 +371,102 @@ class StringRadixTrie:
 
             return result
 
+    async def insert_async(
+        self,
+        text: str,
+        token_ids: List[int],
+        logp: Optional[List[float]] = None,
+        loss_mask: Optional[List[int]] = None,
+        weight_version: Optional[int] = None,
+    ) -> bool:
+        """
+        Async version of insert for better concurrency.
+        Uses write lock to ensure exclusive access during modifications.
+        Args:
+            text: String to insert
+            token_ids: Corresponding token IDs
+            logp: Corresponding log probabilities (must match token_ids length)
+            loss_mask: Corresponding loss mask for model generation parts (must match token_ids length)
+            weight_version: Optional weight version for this insertion
+        Returns:
+            True if insertion was successful
+        """
+        async with write_lock(self._async_lock):
+            # Temporarily disable the original lock to avoid double locking
+            original_lock = self._lock
+            self._lock = None  # Temporarily disable RLock
+
+            try:
+                result = self._insert_internal(text, token_ids, logp, loss_mask, weight_version)
+            finally:
+                self._lock = original_lock  # Restore original lock
+
+            return result
+
+    def _insert_internal(
+        self,
+        text: str,
+        token_ids: List[int],
+        logp: Optional[List[float]] = None,
+        loss_mask: Optional[List[int]] = None,
+        weight_version: Optional[int] = None,
+    ) -> bool:
+        """Internal insert logic without any locks."""
+        if not text or not token_ids:
+            if self.verbose:
+                print("[RadixTree] Insertion failed: text or token_ids is empty")
+            return False
+
+        # Use provided weight version
+        current_weight_version = weight_version
+
+        # Validate logp consistency
+        if logp is not None and len(logp) != len(token_ids):
+            if self.verbose:
+                print(
+                    f"[WARNING] Logp length {len(logp)} does not match token length {len(token_ids)} for text: {text}"
+                )
+                print(f"[WARNING] Logp: {logp}")
+                print(f"[WARNING] Token IDs: {token_ids}")
+            return False
+
+        # Validate loss_mask consistency
+        if loss_mask is not None and len(loss_mask) != len(token_ids):
+            if self.verbose:
+                print(
+                    f"[WARNING] Loss mask length {len(loss_mask)} does not match token length {len(token_ids)} for text: {text}"
+                )
+                print(f"[WARNING] Loss mask: {loss_mask}")
+                print(f"[WARNING] Token IDs: {token_ids}")
+            return False
+
+        # If logp is not provided, create default values (0.0)
+        if logp is None:
+            logp = [0.0] * len(token_ids)
+
+        # If loss_mask is not provided, create default values (1 for model generation parts)
+        if loss_mask is None:
+            loss_mask = [0] * len(token_ids)
+
+        result = self._insert(text, token_ids, logp, loss_mask, current_weight_version)
+
+        # Check if GC should be triggered after insert
+        if self.cur_cache_size > self.max_cache_size and weight_version is not None:
+            if self.verbose:
+                print(
+                    f"[RadixTree] Cache size {self.cur_cache_size} exceeds limit {self.max_cache_size}, triggering GC"
+                )
+            gc_removed = self.gc_by_weight_version(weight_version)
+            if self.verbose:
+                print(f"[RadixTree] GC removed {gc_removed} nodes, new cache size: {self.cur_cache_size}")
+
+        # Print tree structure if verbose is enabled
+        if self.verbose:
+            print("Tree structure after insert:")
+            self.pretty_print()
+
+        return result
+
     def _insert(
         self,
         text: str,
@@ -344,9 +538,17 @@ class StringRadixTrie:
                 current_node.touch()
                 self.cur_cache_size += len(remaining_tokens)
 
-        # Update weight version for all traversed nodes
-        if weight_version is not None and new_node:
-            new_node.weight_version = weight_version
+        # VERSION SEPARATION: Set generation and traverse versions
+        if weight_version is not None:
+            for node in traversed_nodes:
+                if node != self.root and node.has_value:
+                    # New node: set both generation version and traverse version
+                    if node.weight_version is None:
+                        node.weight_version = weight_version    # Generation version (never modified)
+                        node.traverse_version = weight_version  # Initial traverse version
+                    # Existing traversed node: only update traverse version
+                    else:
+                        node.traverse_version = weight_version  # Update traverse version for GC control
 
         return True
 
@@ -438,8 +640,17 @@ class StringRadixTrie:
 
     def gc_by_weight_version(self, current_weight_version: Optional[int] = None) -> int:
         """
-        Perform garbage collection based on weight version.
-        Remove nodes with weight_version < (current_weight_version - gc_threshold_k).
+        Perform garbage collection based on traverse version (not weight version).
+        Remove nodes with traverse_version < (current_weight_version - gc_threshold_k).
+
+        Phase 3 TODO: Implement hybrid GC strategy with:
+        - LRU eviction for frequently accessed entries
+        - Memory pressure monitoring and adaptive thresholds
+        - Background GC with incremental processing
+        - GC heuristics based on access patterns and cache hit rates
+        - Memory usage tracking and reporting
+        - Configurable GC policies (size-based, time-based, access-based)
+
         Args:
             current_weight_version: Current weight version to use for GC threshold
         Returns:
@@ -472,10 +683,10 @@ class StringRadixTrie:
 
     def _find_outdated_nodes(self, gc_threshold: int) -> List[StringTreeNode]:
         """
-        Find nodes that should be removed based on weight version threshold.
+        Find nodes that should be removed based on traverse version threshold.
         Uses layer-by-layer traversal - if parent is outdated, children are not checked.
         Args:
-            gc_threshold: Weight version threshold (nodes < this value will be removed)
+            gc_threshold: Traverse version threshold (nodes < this value will be removed)
         Returns:
             List of nodes to remove
         """
@@ -488,8 +699,8 @@ class StringRadixTrie:
                     check_node(child)
                 return
 
-            # Check if this node should be removed
-            if node.weight_version is not None and node.weight_version <= gc_threshold and node.has_value:
+            # Check if this node should be removed (based on traverse_version, not weight_version)
+            if node.traverse_version is not None and node.traverse_version <= gc_threshold and node.has_value:
                 outdated_nodes.append(node)
                 return  # Don't check children since entire subtree will be removed
 
@@ -576,16 +787,19 @@ class StringRadixTrie:
         for child in node.children:
             self._print_node(child, depth + 1)
 
-    def retrieve_from_text(self, text: str, return_logprob: bool = True):
+    def get_or_create_tokenization(self, text: str, return_logprob: bool = True):
         """
-        Get tokens from text by looking up in radix tree or using tokenizer.
-        Also fetches weight version from worker during this operation.
+        Get existing text→token_ids mapping or create new one for consistency.
+        Ensures stable text→token_ids mapping by inserting new text into tree.
+        Returns version-aligned tokens with generation versions.
+
         Args:
             text: Input text to get tokens for
             return_logprob: If True, also return log probabilities
+
         Returns:
-            List of token IDs corresponding to the input text if return_logprob is False.
-            Tuple of (token_ids, logp) if return_logprob is True.
+            Tuple of (token_ids, logp, loss_mask, generation_versions) for complete version alignment.
+            Non-AI-generated tokens are marked with generation_version = -1.
         """
         # Call find_longest_prefix to get the match result
         result = self.find_longest_prefix(text)
@@ -593,6 +807,8 @@ class StringRadixTrie:
         # If we have a match and it covers the entire text, return the tokens
         if result.matched_prefix and result.token_ids:
             additional_tokens = self.tokenizer(result.remaining_string, add_special_tokens=False)["input_ids"]
+            additional_versions = [-1] * len(additional_tokens)  # Non-AI-generated tokens
+
             return (
                 result.token_ids + additional_tokens,
                 (
@@ -601,6 +817,7 @@ class StringRadixTrie:
                     else [0] * len(result.token_ids + additional_tokens)
                 ),
                 result.loss_mask + len(additional_tokens) * [0],
+                result.generation_versions + additional_versions,  # Version-aligned output
             )
         # If result is empty and input text is not empty, tokenize with tokenizer
         # This is needed because we cannot get the prompt token id from engine response
@@ -610,10 +827,68 @@ class StringRadixTrie:
             tokens = self.tokenizer(text, add_special_tokens=False)["input_ids"]
             # Insert the text and tokens into the tree
             self.insert(text, tokens)
-            # Return the tokens
-            return (tokens, [0.0] * len(tokens), [0] * len(tokens))
+            # Return the tokens with version info (non-AI-generated, so version = -1)
+            return (tokens, [0.0] * len(tokens), [0] * len(tokens), [-1] * len(tokens))
         else:
             raise ValueError("Tokenizer or input text can't be empty")
+
+    async def get_or_create_tokenization_async(self, text: str, return_logprob: bool = True):
+        """
+        Async version of get_or_create_tokenization.
+        Same semantics and return format.
+
+        Args:
+            text: Input text to get tokens for
+            return_logprob: If True, also return log probabilities
+
+        Returns:
+            Tuple of (token_ids, logp, loss_mask, generation_versions) for complete version alignment.
+            Non-AI-generated tokens are marked with generation_version = -1.
+        """
+        # Call find_longest_prefix_async to get the match result
+        result = await self.find_longest_prefix_async(text)
+
+        # If we have a match and it covers the entire text, return the tokens
+        if result.matched_prefix and result.token_ids:
+            additional_tokens = self.tokenizer(result.remaining_string, add_special_tokens=False)["input_ids"]
+            additional_versions = [-1] * len(additional_tokens)  # Non-AI-generated tokens
+
+            return (
+                result.token_ids + additional_tokens,
+                (
+                    result.logp + len(additional_tokens) * [0.0]
+                    if return_logprob
+                    else [0] * len(result.token_ids + additional_tokens)
+                ),
+                result.loss_mask + len(additional_tokens) * [0],
+                result.generation_versions + additional_versions,  # Version-aligned output
+            )
+        # If result is empty and input text is not empty, tokenize with tokenizer
+        # This is needed because we cannot get the prompt token id from engine response
+        # We have to manually insert the text and token into the tree
+        if self.tokenizer and text:
+            # Tokenize the text using the provided tokenizer
+            tokens = self.tokenizer(text, add_special_tokens=False)["input_ids"]
+            # Insert the text and tokens into the tree
+            await self.insert_async(text, tokens)
+            # Return the tokens with version info (non-AI-generated, so version = -1)
+            return (tokens, [0.0] * len(tokens), [0] * len(tokens), [-1] * len(tokens))
+        else:
+            raise ValueError("Tokenizer or input text can't be empty")
+
+    def retrieve_from_text(self, text: str, return_logprob: bool = True):
+        """
+        Deprecated: Use get_or_create_tokenization instead.
+
+        This method is kept for backward compatibility and will be removed in a future version.
+        """
+        import warnings
+        warnings.warn(
+            "retrieve_from_text is deprecated, use get_or_create_tokenization instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.get_or_create_tokenization(text, return_logprob)
 
 
 # Example usage and testing
