@@ -181,6 +181,21 @@ class RolloutManager:
                 rewards = rewards / (std + 1e-6)
 
             return raw_rewards, rewards.flatten().tolist()
+        elif (
+            self.args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"]
+            and not self.args.rewards_normalization
+        ):
+            print(
+                "[WARNING]: Using a GRPO-like algorithm without reward normalization implies that the rewards have been normalized, while the raw rewards are stored in the metadata for the samples."
+            )
+            rewards = [sample.get_reward_value(self.args) for sample in samples]
+            if "reward" not in samples[0].metadata:
+                print(
+                    "[WARNING]: reward not in sample metadata but disable rewards normalization, setting raw_reward = reward."
+                )
+                raw_rewards = rewards
+            else:
+                raw_rewards = [sample.metadata["reward"] for sample in samples]
 
         return raw_rewards, raw_rewards
 
