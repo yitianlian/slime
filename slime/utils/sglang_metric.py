@@ -1,31 +1,3 @@
-"""
-SGLang Metrics Collector for Slime Router
-
-This module provides metrics collection and aggregation for SGLang workers
-managed by Slime Router. It supports:
-- Single worker metrics collection
-- Multi-worker aggregation with statistical analysis (mean/min/max)
-- Incremental statistics (delta between snapshots)
-- High readability and maintainability
-
-Architecture:
-- WorkerMetricsCollector: Collects and tracks metrics for a single worker
-- RouterMetricsAggregator: Aggregates metrics from all workers under a router
-
-Usage:
-    # For single worker debugging
-    worker_collector = WorkerMetricsCollector("http://localhost:30000")
-    worker_collector.record_snapshot()
-    time.sleep(60)
-    stats = worker_collector.get_stats_since_last_snapshot()
-
-    # For router with multiple workers
-    aggregator = RouterMetricsAggregator("http://localhost:8000")
-    aggregator.record_snapshot()
-    time.sleep(60)
-    aggregated_stats = aggregator.get_aggregated_stats()
-"""
-
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
