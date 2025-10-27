@@ -628,7 +628,7 @@ class RouterMetricsAggregator:
                     print(f"  Avg E2E Latency:     {stats.avg_e2e_latency:>10.3f} seconds")
 
             except Exception as e:
-                print(f"  ❌ Error: {e}")
+                print(f"  Error: {e}")
 
             print()
 
@@ -678,7 +678,7 @@ def main():
         except KeyboardInterrupt:
             print("\n\nStopped by user")
         except Exception as e:
-            print(f"\n❌ Error: {e}")
+            print(f"\nError: {e}")
             import traceback
 
             traceback.print_exc()
@@ -715,7 +715,7 @@ def main():
         except KeyboardInterrupt:
             print("\n\nStopped by user")
         except Exception as e:
-            print(f"\n❌ Error: {e}")
+            print(f"\nError: {e}")
             import traceback
 
             traceback.print_exc()
