@@ -15,6 +15,7 @@ def train(args):
     # allocate the GPUs
     pgs = create_placement_groups(args)
     wandb_run_id = init_wandb_primary(args)
+    args.wandb_run_id = wandb_run_id
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
