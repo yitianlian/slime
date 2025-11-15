@@ -9,7 +9,7 @@ def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
     # allocate the GPUs
     pgs = create_placement_groups(args)
-    args.wandb_run_id = init_wandb_primary(args)
+    init_wandb_primary(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
