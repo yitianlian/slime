@@ -525,7 +525,8 @@ class FSDPTrainRayActor(TrainRayActor):
         pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
 
         def _has_rollout_log_probs(batch) -> bool:
-            return "rollout_log_probs" in batch and isinstance(batch["rollout_log_probs"], torch.Tensor)
+            rollout_tensor = batch.get("rollout_log_probs")
+            return isinstance(rollout_tensor, torch.Tensor) and rollout_tensor.numel() > 0
 
         has_rollout_log_probs = all(_has_rollout_log_probs(batch) for batch in unpacked_batches)
         rollout_log_probs = (
@@ -555,6 +556,7 @@ class FSDPTrainRayActor(TrainRayActor):
         pg_clipfrac = sum_of_sample_mean(pg_clipfrac, response_lengths, loss_masks)
         ppo_kl = sum_of_sample_mean(ppo_kl.abs(), response_lengths, loss_masks)
 
+        # Only compare rollout vs. train log probs when they originate from different stages.
         train_rollout_logprob_abs_diff = None
         if not self.args.use_rollout_logprobs and rollout_log_probs is not None:
             train_rollout_logprob_abs_diff = (old_log_probs - rollout_log_probs).abs()
