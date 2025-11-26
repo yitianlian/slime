@@ -556,7 +556,7 @@ class FSDPTrainRayActor(TrainRayActor):
         ppo_kl = sum_of_sample_mean(ppo_kl.abs(), response_lengths, loss_masks)
 
         train_rollout_logprob_abs_diff = None
-        if rollout_log_probs is not None:
+        if not self.args.use_rollout_logprobs and rollout_log_probs is not None:
             train_rollout_logprob_abs_diff = (old_log_probs - rollout_log_probs).abs()
             train_rollout_logprob_abs_diff = sum_of_sample_mean(
                 train_rollout_logprob_abs_diff, response_lengths, loss_masks
