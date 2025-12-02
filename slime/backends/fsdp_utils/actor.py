@@ -591,7 +591,38 @@ class FSDPTrainRayActor(TrainRayActor):
         response_lengths = [batch["response_lengths"] for batch in unpacked_batches]
 
         advantages = advantages.to(device=log_probs.device)
-        ppo_kl = old_log_probs.to(device=log_probs.device) - log_probs
+        old_log_probs = old_log_probs.to(device=log_probs.device)
+        ppo_kl = old_log_probs - log_probs
+
+        opsm_mask = None
+        opsm_clipfrac_num = 0
+        if getattr(self.args, "enable_opsm", False):
+            opsm_mask_list = []
+
+            # Split tensors by response lengths to process per-sequence
+            log_probs_split = log_probs.split(response_lengths)
+            old_log_probs_split = old_log_probs.split(response_lengths)
+            advantages_split = advantages.split(response_lengths)
+
+            for log_prob, old_log_prob, advantage, loss_mask in zip(
+                log_probs_split, old_log_probs_split, advantages_split, loss_masks, strict=False
+            ):
+                # Calculate sequence-level KL
+                seq_kl = ((old_log_prob - log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
+
+                # Calculate sequence-level advantage
+                seq_advantage = advantage.mean()
+
+                # Create sequence-level mask
+                if seq_advantage.item() < 0 and seq_kl.item() > self.args.opsm_delta:
+                    mask_chunk = torch.zeros_like(log_prob)
+                    opsm_clipfrac_num += 1
+                else:
+                    mask_chunk = torch.ones_like(log_prob)
+
+                opsm_mask_list.append(mask_chunk)
+
+            opsm_mask = torch.cat(opsm_mask_list, dim=0)
 
         if self.args.advantage_estimator == "gspo":
             log_ratio_splits = torch.split(ppo_kl, response_lengths, dim=0)
@@ -608,6 +639,9 @@ class FSDPTrainRayActor(TrainRayActor):
             ppo_kl = torch.cat(ppo_kl_list)
 
         pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
+
+        if opsm_mask is not None:
+            pg_loss = pg_loss * opsm_mask
 
         def _has_rollout_log_probs(batch) -> bool:
             rollout_tensor = batch.get("rollout_log_probs")
@@ -678,6 +712,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.args.use_kl_loss:
             reported["kl_loss"] = kl_loss.detach()
+
+        if opsm_mask is not None:
+            reported["opsm_clipfrac"] = torch.tensor(opsm_clipfrac_num, device=loss.device)
 
         if self.args.use_tis and tis is not None:
             reported["tis"] = sum_of_sample_mean(tis, response_lengths, loss_masks).detach()
