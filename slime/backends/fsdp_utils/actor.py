@@ -17,7 +17,7 @@ from slime.utils.data import get_minimum_num_micro_batch_size, process_rollout_d
 from slime.utils.distributed_utils import get_gloo_group
 from slime.utils.memory_utils import clear_memory, print_memory
 from slime.utils.metric_utils import compute_rollout_step
-from slime.utils.ppo_utils import compute_approx_kl, compute_policy_loss
+from slime.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
 from slime.utils.ray_utils import Box
 from slime.utils.timer import Timer, inverse_timer, timer
 from slime.utils.tracking_utils import init_tracking
@@ -144,6 +144,7 @@ class FSDPTrainRayActor(TrainRayActor):
     def _enable_true_on_policy_optimizations(self, args):
         if args.true_on_policy_mode:
             from sglang.srt.batch_invariant_ops import enable_batch_invariant_mode
+
             from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
 
             logger.info("FSDPTrainRayActor call enable_batch_invariant_mode for true-on-policy")
@@ -597,46 +598,22 @@ class FSDPTrainRayActor(TrainRayActor):
         opsm_mask = None
         opsm_clipfrac_num = 0
         if getattr(self.args, "enable_opsm", False):
-            opsm_mask_list = []
-
-            # Split tensors by response lengths to process per-sequence
-            log_probs_split = log_probs.split(response_lengths)
-            old_log_probs_split = old_log_probs.split(response_lengths)
-            advantages_split = advantages.split(response_lengths)
-
-            for log_prob, old_log_prob, advantage, loss_mask in zip(
-                log_probs_split, old_log_probs_split, advantages_split, loss_masks, strict=False
-            ):
-                # Calculate sequence-level KL
-                seq_kl = ((old_log_prob - log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-
-                # Calculate sequence-level advantage
-                seq_advantage = advantage.mean()
-
-                # Create sequence-level mask
-                if seq_advantage.item() < 0 and seq_kl.item() > self.args.opsm_delta:
-                    mask_chunk = torch.zeros_like(log_prob)
-                    opsm_clipfrac_num += 1
-                else:
-                    mask_chunk = torch.ones_like(log_prob)
-
-                opsm_mask_list.append(mask_chunk)
-
-            opsm_mask = torch.cat(opsm_mask_list, dim=0)
+            opsm_mask, opsm_clipfrac_num = compute_opsm_mask(
+                args=self.args,
+                full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
+                full_old_log_probs=[batch[old_log_prob_key] for batch in unpacked_batches],
+                local_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
+                advantages=[batch["advantages"] for batch in unpacked_batches],
+                loss_masks=loss_masks,
+            )
 
         if self.args.advantage_estimator == "gspo":
-            log_ratio_splits = torch.split(ppo_kl, response_lengths, dim=0)
-
-            seq_kls = [
-                ((log_ratio_i * mask_i).sum() / mask_i.sum().clamp_min(1))
-                for log_ratio_i, mask_i in zip(log_ratio_splits, loss_masks, strict=False)
-            ]
-
-            ppo_kl_list = []
-            for seq_kl, length in zip(seq_kls, response_lengths, strict=False):
-                ppo_kl_list.append(seq_kl.expand(length))
-
-            ppo_kl = torch.cat(ppo_kl_list)
+            ppo_kl = compute_gspo_kl(
+                full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
+                full_old_log_probs=[batch[old_log_prob_key] for batch in unpacked_batches],
+                local_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
+                loss_masks=loss_masks,
+            )
 
         pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
 
