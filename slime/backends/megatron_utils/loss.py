@@ -31,14 +31,10 @@ def compute_opsm_mask(
 ) -> tuple[torch.Tensor, int]:
     """Compute Off-Policy Sequence Masking (OPSM) mask.
 
-    OPSM masks out sequences where the advantage is negative and the KL
-    divergence exceeds a threshold (delta). This helps filter out low-quality
-    samples during training.
-
     Args:
         args: Configuration containing `opsm_delta` threshold.
-        iter_log_probs: Current policy log-probs per sample (full or CP-local).
-        iter_old_log_probs: Old policy log-probs per sample (full or CP-local).
+        full_log_probs: Current policy log-probs per sample.
+        full_old_log_probs: Old policy log-probs per sample.
         local_log_probs: Local (CP-local) log-probs for mask shape reference.
         advantages: Advantage values per sample.
         loss_masks: Loss masks per sample.
@@ -83,13 +79,9 @@ def compute_gspo_kl(
 ) -> torch.Tensor:
     """Compute GSPO-style per-sequence KL divergence.
 
-    For GSPO (Group-wise Sequence Policy Optimization), the KL divergence is
-    computed at the sequence level and then expanded to match the per-token
-    shape. This differs from standard PPO which uses per-token KL.
-
     Args:
-        iter_log_probs: Current policy log-probs per sample (full or CP-local).
-        iter_old_log_probs: Old policy log-probs per sample (full or CP-local).
+        full_log_probs: Current policy log-probs per sample (full or CP-local).
+        full_old_log_probs: Old policy log-probs per sample (full or CP-local).
         local_log_probs: Local (CP-local) log-probs for expansion shape reference.
         loss_masks: Loss masks per sample.
 
