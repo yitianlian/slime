@@ -412,7 +412,7 @@ def policy_loss_function(
 
     if use_full_log_probs:
         for log_prob, old_log_prob, total_length, response_length in zip(
-            log_probs, old_log_probs, total_lengths, response_lengths
+            log_probs, old_log_probs, total_lengths, response_lengths, strict=False
         ):
             full_log_probs.append(all_gather_with_cp(log_prob, total_length, response_length))
             full_old_log_probs.append(all_gather_with_cp(old_log_prob, total_length, response_length))
@@ -426,7 +426,7 @@ def policy_loss_function(
         iter_old_log_probs = full_old_log_probs if use_full_log_probs else old_log_probs
 
         for full_log_prob, full_old_log_prob, advantage, loss_mask, local_log_prob in zip(
-            iter_log_probs, iter_old_log_probs, batch["advantages"], batch["loss_masks"], log_probs
+            iter_log_probs, iter_old_log_probs, batch["advantages"], batch["loss_masks"], log_probs, strict=False
         ):
             # Calculate sequence-level KL
             seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
