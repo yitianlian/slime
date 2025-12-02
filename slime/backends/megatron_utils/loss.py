@@ -402,20 +402,57 @@ def policy_loss_function(
 
     log_probs = log_probs_and_entropy["log_probs"]
 
+    # Gather full log probs if needed for OPSM or GSPO
+    full_log_probs = []
+    full_old_log_probs = []
+    use_full_log_probs = (
+        args.enable_opsm or args.advantage_estimator == "gspo"
+    ) and mpu.get_context_parallel_world_size() > 1
+
+    if use_full_log_probs:
+        for log_prob, old_log_prob, total_length, response_length in zip(
+            log_probs, old_log_probs, total_lengths, response_lengths
+        ):
+            full_log_probs.append(all_gather_with_cp(log_prob, total_length, response_length))
+            full_old_log_probs.append(all_gather_with_cp(old_log_prob, total_length, response_length))
+
+    opsm_mask = None
+    opsm_clipfrac_num = 0
+    if args.enable_opsm:
+        opsm_mask_list = []
+        opsm_clip_indicators = []
+        iter_log_probs = full_log_probs if use_full_log_probs else log_probs
+        iter_old_log_probs = full_old_log_probs if use_full_log_probs else old_log_probs
+
+        for full_log_prob, full_old_log_prob, advantage, loss_mask, local_log_prob in zip(
+            iter_log_probs, iter_old_log_probs, batch["advantages"], batch["loss_masks"], log_probs
+        ):
+            # Calculate sequence-level KL
+            seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
+
+            # Calculate sequence-level advantage (mean of advantage values)
+            # For GRPO, advantage is constant across the sequence, so mean == any element
+            seq_advantage = advantage.mean()
+
+            # Create sequence-level mask: 0 if (seq_adv < 0 and seq_kl > delta), else 1
+            # This mask applies to the entire sequence
+            if seq_advantage.item() < 0 and seq_kl.item() > args.opsm_delta:
+                mask_chunk = torch.zeros_like(local_log_prob)
+                opsm_clipfrac_num += 1
+            else:
+                mask_chunk = torch.ones_like(local_log_prob)
+
+            opsm_mask_list.append(mask_chunk)
+
+        opsm_mask = torch.cat(opsm_mask_list, dim=0)
     if args.advantage_estimator == "gspo":
-        full_log_probs = [
-            all_gather_with_cp(log_prob, total_length, response_length)
-            for log_prob, total_length, response_length in zip(log_probs, total_lengths, response_lengths)
-        ]
-        full_old_log_probs = [
-            all_gather_with_cp(old_log_prob, total_length, response_length)
-            for old_log_prob, total_length, response_length in zip(old_log_probs, total_lengths, response_lengths)
-        ]
+        iter_log_probs = full_log_probs if use_full_log_probs else log_probs
+        iter_old_log_probs = full_old_log_probs if use_full_log_probs else old_log_probs
 
         loss_masks = batch["loss_masks"]
         ppo_kl = [
             ((old_logprob - log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            for log_prob, old_logprob, loss_mask in zip(full_log_probs, full_old_log_probs, loss_masks)
+            for log_prob, old_logprob, loss_mask in zip(iter_log_probs, iter_old_log_probs, loss_masks)
         ]
         ppo_kl = [kl.expand_as(log_prob) for kl, log_prob in zip(ppo_kl, log_probs)]
         ppo_kl = torch.cat(ppo_kl, dim=0)
@@ -427,6 +464,9 @@ def policy_loss_function(
         ppo_kl = old_log_probs - log_probs
 
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
+
+    if opsm_mask is not None:
+        pg_loss = pg_loss * opsm_mask
 
     # Apply off-policy correction using importance sampling if enabled
     if args.get_mismatch_metrics or args.use_tis:
@@ -531,6 +571,9 @@ def policy_loss_function(
         for metric_key, metric_value in tis_metrics.items():
             key_name = f"{metric_key}"
             reported_loss[key_name] = sum_of_sample_mean(metric_value)
+
+    if opsm_clipfrac_num is not None:
+        reported_loss["opsm_clipfrac"] = torch.tensor(opsm_clipfrac_num, device=loss.device)
 
     return loss, reported_loss
 
