@@ -421,7 +421,6 @@ def policy_loss_function(
     opsm_clipfrac_num = 0
     if args.enable_opsm:
         opsm_mask_list = []
-        opsm_clip_indicators = []
         iter_log_probs = full_log_probs if use_full_log_probs else log_probs
         iter_old_log_probs = full_old_log_probs if use_full_log_probs else old_log_probs
 
@@ -453,7 +452,7 @@ def policy_loss_function(
         loss_masks = batch["loss_masks"]
         ppo_kl = [
             ((old_logprob - log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            for log_prob, old_logprob, loss_mask in zip(iter_log_probs, iter_old_log_probs, loss_masks)
+            for log_prob, old_logprob, loss_mask in zip(iter_log_probs, iter_old_log_probs, loss_masks, strict=False)
         ]
         ppo_kl = [kl.expand_as(log_prob) for kl, log_prob in zip(ppo_kl, log_probs, strict=False)]
         ppo_kl = torch.cat(ppo_kl, dim=0)
