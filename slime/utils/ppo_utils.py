@@ -47,7 +47,6 @@ def compute_approx_kl(
         raise ValueError(f"Unknown kl_loss_type: {kl_loss_type}")
 
 
-@torch.compile(dynamic=True)
 def compute_opsm_mask(
     args: Namespace,
     full_log_probs: list[torch.Tensor],
@@ -72,7 +71,8 @@ def compute_opsm_mask(
         `opsm_clipfrac_num` is the count of masked sequences.
     """
     opsm_mask_list = []
-    opsm_clipfrac_num = 0
+    device = local_log_probs[0].device
+    opsm_clipfrac_num = torch.tensor(0.0, device=device)
 
     for full_log_prob, full_old_log_prob, advantage, loss_mask, local_log_prob in zip(
         full_log_probs, full_old_log_probs, advantages, loss_masks, local_log_probs, strict=False
@@ -80,23 +80,16 @@ def compute_opsm_mask(
         # Calculate sequence-level KL
         seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
 
-        # Calculate sequence-level advantage (mean of advantage values)
-        # For GRPO, advantage is constant across the sequence, so mean == any element
-        seq_advantage = advantage.mean()
+        # Create mask: 0 if (advantage < 0 and seq_kl > delta), else 1
+        mask = (advantage < 0) & (seq_kl > args.opsm_delta)
+        opsm_clipfrac_num += mask.float().sum() / torch.clamp_min(loss_mask.sum(), 1)
 
-        # Create sequence-level mask: 0 if (seq_adv < 0 and seq_kl > delta), else 1
-        # This mask applies to the entire sequence
-        condition = (seq_advantage < 0) & (seq_kl > args.opsm_delta)
-        mask_chunk = torch.where(condition, torch.zeros_like(local_log_prob), torch.ones_like(local_log_prob))
-        opsm_clipfrac_num += condition.int().item()
-
-        opsm_mask_list.append(mask_chunk)
+        opsm_mask_list.append(1 - mask)
 
     opsm_mask = torch.cat(opsm_mask_list, dim=0)
     return opsm_mask, opsm_clipfrac_num
 
 
-@torch.compile(dynamic=True)
 def compute_gspo_kl(
     full_log_probs: list[torch.Tensor],
     full_old_log_probs: list[torch.Tensor],

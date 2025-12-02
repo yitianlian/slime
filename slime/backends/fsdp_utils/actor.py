@@ -595,9 +595,9 @@ class FSDPTrainRayActor(TrainRayActor):
         old_log_probs = old_log_probs.to(device=log_probs.device)
         ppo_kl = old_log_probs - log_probs
 
-        opsm_mask = None
-        opsm_clipfrac_num = 0
-        if getattr(self.args, "enable_opsm", False):
+        if self.args.use_opsm:
+            opsm_mask = None
+            opsm_clipfrac_num = 0
             opsm_mask, opsm_clipfrac_num = compute_opsm_mask(
                 args=self.args,
                 full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
@@ -690,7 +690,7 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.use_kl_loss:
             reported["kl_loss"] = kl_loss.detach()
 
-        if opsm_mask is not None:
+        if self.args.use_opsm:
             reported["opsm_clipfrac"] = torch.tensor(opsm_clipfrac_num, device=loss.device)
 
         if self.args.use_tis and tis is not None:

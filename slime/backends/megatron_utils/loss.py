@@ -407,36 +407,28 @@ def policy_loss_function(
 
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
     cp_size = mpu.get_context_parallel_world_size()
-    need_full_log_probs = (args.enable_opsm or args.advantage_estimator == "gspo") and cp_size > 1
+    need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"
 
     full_log_probs = None
     full_old_log_probs = None
     if need_full_log_probs:
-        full_log_probs = (
-            [
-                all_gather_with_cp(log_prob, total_length, response_length)
-                for log_prob, total_length, response_length in zip(
-                    log_probs, total_lengths, response_lengths, strict=False
-                )
-            ]
-            if cp_size > 1
-            else log_probs
-        )
-        full_old_log_probs = (
-            [
-                all_gather_with_cp(old_log_prob, total_length, response_length)
-                for old_log_prob, total_length, response_length in zip(
-                    old_log_probs, total_lengths, response_lengths, strict=False
-                )
-            ]
-            if cp_size > 1
-            else old_log_probs
-        )
+        full_log_probs = [
+            all_gather_with_cp(log_prob, total_length, response_length)
+            for log_prob, total_length, response_length in zip(
+                log_probs, total_lengths, response_lengths, strict=False
+            )
+        ]
+        full_old_log_probs = [
+            all_gather_with_cp(old_log_prob, total_length, response_length)
+            for old_log_prob, total_length, response_length in zip(
+                old_log_probs, total_lengths, response_lengths, strict=False
+            )
+        ]
 
     # Compute OPSM mask if enabled
-    opsm_mask = None
-    opsm_clipfrac_num = 0
-    if args.enable_opsm:
+    if args.use_opsm:
+        opsm_mask = None
+        opsm_clipfrac_num = 0
         opsm_mask, opsm_clipfrac_num = compute_opsm_mask(
             args=args,
             full_log_probs=full_log_probs,
@@ -463,7 +455,7 @@ def policy_loss_function(
 
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
 
-    if opsm_mask is not None:
+    if args.use_opsm:
         pg_loss = pg_loss * opsm_mask
 
     # Apply off-policy correction using importance sampling if enabled
