@@ -406,7 +406,6 @@ def policy_loss_function(
     log_probs = log_probs_and_entropy["log_probs"]
 
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
-    cp_size = mpu.get_context_parallel_world_size()
     need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"
 
     full_log_probs = None
@@ -431,7 +430,6 @@ def policy_loss_function(
             args=args,
             full_log_probs=full_log_probs,
             full_old_log_probs=full_old_log_probs,
-            local_log_probs=log_probs,
             advantages=batch["advantages"],
             loss_masks=batch["loss_masks"],
         )

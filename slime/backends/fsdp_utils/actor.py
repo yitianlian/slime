@@ -600,7 +600,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 args=self.args,
                 full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
                 full_old_log_probs=[batch[old_log_prob_key] for batch in unpacked_batches],
-                local_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
                 advantages=[batch["advantages"] for batch in unpacked_batches],
                 loss_masks=loss_masks,
             )

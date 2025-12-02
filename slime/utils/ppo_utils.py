@@ -51,7 +51,6 @@ def compute_opsm_mask(
     args: Namespace,
     full_log_probs: list[torch.Tensor],
     full_old_log_probs: list[torch.Tensor],
-    local_log_probs: list[torch.Tensor],
     advantages: list[torch.Tensor],
     loss_masks: list[torch.Tensor],
 ) -> tuple[torch.Tensor, int]:
@@ -61,7 +60,6 @@ def compute_opsm_mask(
         args: Configuration containing `opsm_delta` threshold.
         full_log_probs: Current policy log-probs per sample.
         full_old_log_probs: Old policy log-probs per sample.
-        local_log_probs: Local (CP-local) log-probs for mask shape reference.
         advantages: Advantage values per sample.
         loss_masks: Loss masks per sample.
 
@@ -71,11 +69,11 @@ def compute_opsm_mask(
         `opsm_clipfrac_num` is the count of masked sequences.
     """
     opsm_mask_list = []
-    device = local_log_probs[0].device
+    device = advantages[0].device
     opsm_clipfrac_num = torch.tensor(0.0, device=device)
 
-    for full_log_prob, full_old_log_prob, advantage, loss_mask, local_log_prob in zip(
-        full_log_probs, full_old_log_probs, advantages, loss_masks, local_log_probs, strict=False
+    for full_log_prob, full_old_log_prob, advantage, loss_mask in zip(
+        full_log_probs, full_old_log_probs, advantages, loss_masks, strict=False
     ):
         # Calculate sequence-level KL
         seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)

@@ -820,7 +820,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--opsm-delta",
                 type=float,
-                default=0.0,
+                default=1e-4,
                 help="The threshold for Off-Policy Sequence Masking (OPSM).",
             )
             return parser
