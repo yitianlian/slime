@@ -427,8 +427,6 @@ def policy_loss_function(
 
     # Compute OPSM mask if enabled
     if args.use_opsm:
-        opsm_mask = None
-        opsm_clipfrac_num = 0
         opsm_mask, opsm_clipfrac_num = compute_opsm_mask(
             args=args,
             full_log_probs=full_log_probs,
@@ -562,7 +560,7 @@ def policy_loss_function(
             key_name = f"{metric_key}"
             reported_loss[key_name] = sum_of_sample_mean(metric_value)
 
-    if opsm_clipfrac_num is not None:
+    if args.use_opsm:
         reported_loss["opsm_clipfrac"] = torch.tensor(opsm_clipfrac_num, device=loss.device)
 
     return loss, reported_loss

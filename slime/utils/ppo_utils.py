@@ -81,8 +81,8 @@ def compute_opsm_mask(
         seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
 
         # Create mask: 0 if (advantage < 0 and seq_kl > delta), else 1
-        mask = (advantage < 0) & (seq_kl > args.opsm_delta)
-        opsm_clipfrac_num += mask.float().sum() / torch.clamp_min(loss_mask.sum(), 1)
+        mask = ((advantage < 0) & (seq_kl > args.opsm_delta)).float()
+        opsm_clipfrac_num += mask.sum() / torch.clamp_min(loss_mask.sum(), 1)
 
         opsm_mask_list.append(1 - mask)
 

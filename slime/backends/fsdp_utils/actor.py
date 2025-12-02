@@ -596,8 +596,6 @@ class FSDPTrainRayActor(TrainRayActor):
         ppo_kl = old_log_probs - log_probs
 
         if self.args.use_opsm:
-            opsm_mask = None
-            opsm_clipfrac_num = 0
             opsm_mask, opsm_clipfrac_num = compute_opsm_mask(
                 args=self.args,
                 full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
@@ -617,7 +615,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
 
-        if opsm_mask is not None:
+        if self.args.use_opsm:
             pg_loss = pg_loss * opsm_mask
 
         def _has_rollout_log_probs(batch) -> bool:
