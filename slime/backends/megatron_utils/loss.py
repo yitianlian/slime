@@ -21,6 +21,93 @@ from slime.utils.types import RolloutBatch
 from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
 
 
+def compute_opsm_mask(
+    args: Namespace,
+    full_log_probs: list[torch.Tensor],
+    full_old_log_probs: list[torch.Tensor],
+    local_log_probs: list[torch.Tensor],
+    advantages: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+) -> tuple[torch.Tensor, int]:
+    """Compute Off-Policy Sequence Masking (OPSM) mask.
+
+    OPSM masks out sequences where the advantage is negative and the KL
+    divergence exceeds a threshold (delta). This helps filter out low-quality
+    samples during training.
+
+    Args:
+        args: Configuration containing `opsm_delta` threshold.
+        iter_log_probs: Current policy log-probs per sample (full or CP-local).
+        iter_old_log_probs: Old policy log-probs per sample (full or CP-local).
+        local_log_probs: Local (CP-local) log-probs for mask shape reference.
+        advantages: Advantage values per sample.
+        loss_masks: Loss masks per sample.
+
+    Returns:
+        Tuple of `(opsm_mask, opsm_clipfrac_num)` where `opsm_mask` is a
+        concatenated tensor of per-token masks (1=keep, 0=mask) and
+        `opsm_clipfrac_num` is the count of masked sequences.
+    """
+    opsm_mask_list = []
+    opsm_clipfrac_num = 0
+
+    for full_log_prob, full_old_log_prob, advantage, loss_mask, local_log_prob in zip(
+        full_log_probs, full_old_log_probs, advantages, loss_masks, local_log_probs, strict=False
+    ):
+        # Calculate sequence-level KL
+        seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
+
+        # Calculate sequence-level advantage (mean of advantage values)
+        # For GRPO, advantage is constant across the sequence, so mean == any element
+        seq_advantage = advantage.mean()
+
+        # Create sequence-level mask: 0 if (seq_adv < 0 and seq_kl > delta), else 1
+        # This mask applies to the entire sequence
+        if seq_advantage.item() < 0 and seq_kl.item() > args.opsm_delta:
+            mask_chunk = torch.zeros_like(local_log_prob)
+            opsm_clipfrac_num += 1
+        else:
+            mask_chunk = torch.ones_like(local_log_prob)
+
+        opsm_mask_list.append(mask_chunk)
+
+    opsm_mask = torch.cat(opsm_mask_list, dim=0)
+    return opsm_mask, opsm_clipfrac_num
+
+
+def compute_gspo_kl(
+    full_log_probs: list[torch.Tensor],
+    full_old_log_probs: list[torch.Tensor],
+    local_log_probs: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+) -> torch.Tensor:
+    """Compute GSPO-style per-sequence KL divergence.
+
+    For GSPO (Group-wise Sequence Policy Optimization), the KL divergence is
+    computed at the sequence level and then expanded to match the per-token
+    shape. This differs from standard PPO which uses per-token KL.
+
+    Args:
+        iter_log_probs: Current policy log-probs per sample (full or CP-local).
+        iter_old_log_probs: Old policy log-probs per sample (full or CP-local).
+        local_log_probs: Local (CP-local) log-probs for expansion shape reference.
+        loss_masks: Loss masks per sample.
+
+    Returns:
+        Concatenated tensor of per-token KL values where each token in a
+        sequence has the same KL value (the sequence-level KL).
+    """
+    # Compute sequence-level KL and expand to per-token
+    ppo_kl = [
+        ((old_logprob - log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
+        for log_prob, old_logprob, loss_mask in zip(full_log_probs, full_old_log_probs, loss_masks, strict=False)
+    ]
+    ppo_kl = [kl.expand_as(log_prob) for kl, log_prob in zip(ppo_kl, local_log_probs, strict=False)]
+    ppo_kl = torch.cat(ppo_kl, dim=0)
+
+    return ppo_kl
+
+
 def get_responses(
     logits: torch.Tensor,
     *,
@@ -403,59 +490,48 @@ def policy_loss_function(
 
     log_probs = log_probs_and_entropy["log_probs"]
 
-    # Gather full log probs if needed for OPSM or GSPO
-    full_log_probs = []
-    full_old_log_probs = []
-    use_full_log_probs = (
-        args.enable_opsm or args.advantage_estimator == "gspo"
-    ) and mpu.get_context_parallel_world_size() > 1
+    # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
+    cp_size = mpu.get_context_parallel_world_size()
+    need_full_log_probs = (args.enable_opsm or args.advantage_estimator == "gspo") and cp_size > 1
+    
+    full_log_probs = None
+    full_old_log_probs = None
+    if need_full_log_probs:
+        full_log_probs = [
+            all_gather_with_cp(log_prob, total_length, response_length)
+            for log_prob, total_length, response_length in zip(
+                log_probs, total_lengths, response_lengths, strict=False
+            )
+        ] if cp_size > 1 else log_probs
+        full_old_log_probs = [
+            all_gather_with_cp(old_log_prob, total_length, response_length)
+            for old_log_prob, total_length, response_length in zip(
+                old_log_probs, total_lengths, response_lengths, strict=False
+            )
+        ] if cp_size > 1 else old_log_probs
+    
 
-    if use_full_log_probs:
-        for log_prob, old_log_prob, total_length, response_length in zip(
-            log_probs, old_log_probs, total_lengths, response_lengths, strict=False
-        ):
-            full_log_probs.append(all_gather_with_cp(log_prob, total_length, response_length))
-            full_old_log_probs.append(all_gather_with_cp(old_log_prob, total_length, response_length))
-
+    # Compute OPSM mask if enabled
     opsm_mask = None
     opsm_clipfrac_num = 0
     if args.enable_opsm:
-        opsm_mask_list = []
-        iter_log_probs = full_log_probs if use_full_log_probs else log_probs
-        iter_old_log_probs = full_old_log_probs if use_full_log_probs else old_log_probs
+        opsm_mask, opsm_clipfrac_num = compute_opsm_mask(
+            args=args,
+            full_log_probs=full_log_probs,
+            full_old_log_probs=full_old_log_probs,
+            local_log_probs=log_probs,
+            advantages=batch["advantages"],
+            loss_masks=batch["loss_masks"],
+        )
 
-        for full_log_prob, full_old_log_prob, advantage, loss_mask, local_log_prob in zip(
-            iter_log_probs, iter_old_log_probs, batch["advantages"], batch["loss_masks"], log_probs, strict=False
-        ):
-            # Calculate sequence-level KL
-            seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-
-            # Calculate sequence-level advantage (mean of advantage values)
-            # For GRPO, advantage is constant across the sequence, so mean == any element
-            seq_advantage = advantage.mean()
-
-            # Create sequence-level mask: 0 if (seq_adv < 0 and seq_kl > delta), else 1
-            # This mask applies to the entire sequence
-            if seq_advantage.item() < 0 and seq_kl.item() > args.opsm_delta:
-                mask_chunk = torch.zeros_like(local_log_prob)
-                opsm_clipfrac_num += 1
-            else:
-                mask_chunk = torch.ones_like(local_log_prob)
-
-            opsm_mask_list.append(mask_chunk)
-
-        opsm_mask = torch.cat(opsm_mask_list, dim=0)
+    # Compute KL divergence (GSPO uses sequence-level KL, others use per-token KL)
     if args.advantage_estimator == "gspo":
-        iter_log_probs = full_log_probs if use_full_log_probs else log_probs
-        iter_old_log_probs = full_old_log_probs if use_full_log_probs else old_log_probs
-
-        loss_masks = batch["loss_masks"]
-        ppo_kl = [
-            ((old_logprob - log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-            for log_prob, old_logprob, loss_mask in zip(iter_log_probs, iter_old_log_probs, loss_masks, strict=False)
-        ]
-        ppo_kl = [kl.expand_as(log_prob) for kl, log_prob in zip(ppo_kl, log_probs, strict=False)]
-        ppo_kl = torch.cat(ppo_kl, dim=0)
+        ppo_kl = compute_gspo_kl(
+            full_log_probs=full_log_probs,
+            full_old_log_probs=full_old_log_probs,
+            local_log_probs=log_probs,
+            loss_masks=batch["loss_masks"],
+        )
         old_log_probs = torch.cat(old_log_probs, dim=0)
         log_probs = torch.cat(log_probs, dim=0)
     else:
