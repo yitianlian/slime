@@ -2,7 +2,6 @@ import logging
 from argparse import Namespace
 from itertools import accumulate
 
-from modelscope.models.multi_modal.ofa_for_all_tasks import osp
 
 import ray
 import torch
