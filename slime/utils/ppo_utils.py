@@ -53,7 +53,7 @@ def compute_opsm_mask(
     full_old_log_probs: list[torch.Tensor],
     advantages: list[torch.Tensor],
     loss_masks: list[torch.Tensor],
-) -> tuple[torch.Tensor, int]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute Off-Policy Sequence Masking (OPSM) mask.
 
     Args:
@@ -64,13 +64,13 @@ def compute_opsm_mask(
         loss_masks: Loss masks per sample.
 
     Returns:
-        Tuple of `(opsm_mask, opsm_clipfrac_num)` where `opsm_mask` is a
-        concatenated tensor of per-token masks (1=keep, 0=mask) and
-        `opsm_clipfrac_num` is the count of masked sequences.
+        Tuple of `(opsm_mask, opsm_clipfrac)` where `opsm_mask` is a
+        concatenated tensor of per-token masks and
+        `opsm_clipfrac` is the count of masked sequences.
     """
     opsm_mask_list = []
     device = advantages[0].device
-    opsm_clipfrac_num = torch.tensor(0.0, device=device)
+    opsm_clipfrac = torch.tensor(0.0, device=device)
 
     for full_log_prob, full_old_log_prob, advantage, loss_mask in zip(
         full_log_probs, full_old_log_probs, advantages, loss_masks, strict=False
@@ -80,12 +80,12 @@ def compute_opsm_mask(
 
         # Create mask: 0 if (advantage < 0 and seq_kl > delta), else 1
         mask = ((advantage < 0) & (seq_kl > args.opsm_delta)).float()
-        opsm_clipfrac_num += mask.sum() / torch.clamp_min(loss_mask.sum(), 1)
+        opsm_clipfrac += mask.sum() / torch.clamp_min(loss_mask.sum(), 1)
 
         opsm_mask_list.append(1 - mask)
 
     opsm_mask = torch.cat(opsm_mask_list, dim=0)
-    return opsm_mask, opsm_clipfrac_num
+    return opsm_mask, opsm_clipfrac
 
 
 def compute_gspo_kl(

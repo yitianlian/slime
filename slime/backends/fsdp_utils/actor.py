@@ -2,6 +2,8 @@ import logging
 from argparse import Namespace
 from itertools import accumulate
 
+from modelscope.models.multi_modal.ofa_for_all_tasks import osp
+
 import ray
 import torch
 import torch.distributed as dist
@@ -596,7 +598,7 @@ class FSDPTrainRayActor(TrainRayActor):
         ppo_kl = old_log_probs - log_probs
 
         if self.args.use_opsm:
-            opsm_mask, opsm_clipfrac_num = compute_opsm_mask(
+            opsm_mask, opsm_clipfrac = compute_opsm_mask(
                 args=self.args,
                 full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
                 full_old_log_probs=[batch[old_log_prob_key] for batch in unpacked_batches],
@@ -688,7 +690,7 @@ class FSDPTrainRayActor(TrainRayActor):
             reported["kl_loss"] = kl_loss.detach()
 
         if self.args.use_opsm:
-            reported["opsm_clipfrac"] = torch.tensor(opsm_clipfrac_num, device=loss.device)
+            reported["opsm_clipfrac"] = opsm_clipfrac
 
         if self.args.use_tis and tis is not None:
             reported["tis"] = sum_of_sample_mean(tis, response_lengths, loss_masks).detach()
