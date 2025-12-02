@@ -493,23 +493,30 @@ def policy_loss_function(
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
     cp_size = mpu.get_context_parallel_world_size()
     need_full_log_probs = (args.enable_opsm or args.advantage_estimator == "gspo") and cp_size > 1
-    
+
     full_log_probs = None
     full_old_log_probs = None
     if need_full_log_probs:
-        full_log_probs = [
-            all_gather_with_cp(log_prob, total_length, response_length)
-            for log_prob, total_length, response_length in zip(
-                log_probs, total_lengths, response_lengths, strict=False
-            )
-        ] if cp_size > 1 else log_probs
-        full_old_log_probs = [
-            all_gather_with_cp(old_log_prob, total_length, response_length)
-            for old_log_prob, total_length, response_length in zip(
-                old_log_probs, total_lengths, response_lengths, strict=False
-            )
-        ] if cp_size > 1 else old_log_probs
-    
+        full_log_probs = (
+            [
+                all_gather_with_cp(log_prob, total_length, response_length)
+                for log_prob, total_length, response_length in zip(
+                    log_probs, total_lengths, response_lengths, strict=False
+                )
+            ]
+            if cp_size > 1
+            else log_probs
+        )
+        full_old_log_probs = (
+            [
+                all_gather_with_cp(old_log_prob, total_length, response_length)
+                for old_log_prob, total_length, response_length in zip(
+                    old_log_probs, total_lengths, response_lengths, strict=False
+                )
+            ]
+            if cp_size > 1
+            else old_log_probs
+        )
 
     # Compute OPSM mask if enabled
     opsm_mask = None
