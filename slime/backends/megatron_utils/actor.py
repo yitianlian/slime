@@ -384,7 +384,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     )
 
                 # when there is old actor, we need to update the model params to actor manually
-                if "old_actor" in self.weights_backuper.backup_tags:
+                if self.args.use_rollout_logprobs or "old_actor" in self.weights_backuper.backup_tags:
                     self.weights_backuper.restore("actor")
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
