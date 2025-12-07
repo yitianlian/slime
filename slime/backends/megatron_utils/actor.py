@@ -202,10 +202,6 @@ class MegatronTrainRayActor(TrainRayActor):
             ]
         return rollout_data
 
-    @property
-    def active_model_tag(self) -> str | None:
-        return getattr(self, "_active_model_tag", None)
-
     def _switch_model(self, target_tag: str) -> None:
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
@@ -367,14 +363,13 @@ class MegatronTrainRayActor(TrainRayActor):
                             store_prefix="ref_",
                         )
                     )
-
+                self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
                 if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
                     if self.args.use_routing_replay:
                         if self.args.use_rollout_routing_replay:
                             os.environ["ROUTING_REPLAY_STAGE"] = "replay_forward"
                         else:
                             os.environ["ROUTING_REPLAY_STAGE"] = "record"
-                    self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
                     rollout_data.update(
                         self.compute_log_prob(
                             data_iterator,
@@ -391,9 +386,7 @@ class MegatronTrainRayActor(TrainRayActor):
                         rollout_data,
                         self._actor_critic_groups,
                     )
-
-                # when there is old actor, we need to update the model params to actor manually
-                if self.args.use_rollout_logprobs or "old_actor" in self.weights_backuper.backup_tags:
+                if self._active_model_tag != "actor":
                     self._switch_model("actor")
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
