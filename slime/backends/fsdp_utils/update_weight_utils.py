@@ -164,7 +164,7 @@ class UpdateWeightFromTensor(UpdateWeight):
                     "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],
                     "load_format": "flattened_bucket",
                     "flush_cache": False,
-                    "weight_version": weight_version,
+                    "weight_version": str(weight_version),
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
@@ -238,7 +238,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
                 dtypes=[param.dtype for _, param in named_tensors],
                 shapes=[param.shape for _, param in named_tensors],
                 group_name=self._group_name,
-                weight_version=weight_version,
+                weight_version=str(weight_version),
             )
             for engine in self.rollout_engines
         ]
