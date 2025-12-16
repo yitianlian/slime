@@ -276,8 +276,6 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
             sample.status = Sample.Status.ABORTED
             return sample
 
-        
-
         if "output_token_logprobs" in output["meta_info"]:
             cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
             cur_response = state.tokenizer.decode(cur_response_token_ids)
@@ -285,7 +283,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
             if sample.rollout_log_probs is None:
                 sample.rollout_log_probs = []
             sample.rollout_log_probs += cur_log_probs
-            
+
         else:
             cur_response = output["text"]
             cur_response = postprocess_responses(cur_response)
