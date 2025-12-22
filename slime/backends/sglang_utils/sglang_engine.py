@@ -108,7 +108,14 @@ class SGLangEngine(RayActor):
             dist_init_addr = f"[{ipv6_addr}]:{port_str}"
 
         server_args_dict, external_engine_need_check_fields = _compute_server_args(
-            self.args, self.rank, dist_init_addr, nccl_port, host, port, self.worker_type, disaggregation_bootstrap_port
+            self.args,
+            self.rank,
+            dist_init_addr,
+            nccl_port,
+            host,
+            port,
+            self.worker_type,
+            disaggregation_bootstrap_port,
         )
 
         self.node_rank = server_args_dict["node_rank"]
@@ -384,7 +391,16 @@ class SGLangEngine(RayActor):
         return response
 
 
-def _compute_server_args(args, rank, dist_init_addr, nccl_port, host, port, worker_type: str = "regular", disaggregation_bootstrap_port: int | None = None):
+def _compute_server_args(
+    args,
+    rank,
+    dist_init_addr,
+    nccl_port,
+    host,
+    port,
+    worker_type: str = "regular",
+    disaggregation_bootstrap_port: int | None = None,
+):
     nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
     kwargs = {
@@ -414,7 +430,9 @@ def _compute_server_args(args, rank, dist_init_addr, nccl_port, host, port, work
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
         kwargs["load_balance_method"] = "round_robin"
-        assert disaggregation_bootstrap_port is not None, "disaggregation_bootstrap_port must be set for prefill worker"
+        assert (
+            disaggregation_bootstrap_port is not None
+        ), "disaggregation_bootstrap_port must be set for prefill worker"
         kwargs["disaggregation_bootstrap_port"] = disaggregation_bootstrap_port
     elif worker_type == "decode":
         kwargs["disaggregation_mode"] = "decode"
