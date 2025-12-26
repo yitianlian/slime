@@ -1,10 +1,10 @@
 import logging
 import multiprocessing
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Any
-import threading
 
 import numpy as np
 import ray

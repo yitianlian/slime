@@ -88,9 +88,7 @@ def execute():
     )
 
     fault_tolerance_args = (
-        "--use-fault-tolerance "
-        "--rollout-health-check-interval 0 "
-        "--rollout-health-check-timeout 5 "
+        "--use-fault-tolerance " "--rollout-health-check-interval 0 " "--rollout-health-check-timeout 5 "
     )
 
     misc_args = (
