@@ -152,6 +152,9 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 help="Whether to disable recompute loss function to save memory during training.",
             )
+            parser.add_argument(
+                "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
+            )
 
             return parser
 
@@ -839,6 +842,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
             )
+            parser.add_argument(
+                "--custom-pg-loss-reducer-function-path",
+                type=str,
+                default=None,
+                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
+            )
 
             parser.add_argument(
                 "--use-routing-replay",
@@ -1121,6 +1130,16 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "Path to the custom function that will post process reward, by default it will be the normalization for grpo. "
                 ),
             )
+            parser.add_argument(
+                "--custom-convert-samples-to-train-data-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a custom function that converts samples to training data. "
+                    "If set, this function will replace the default _convert_samples_to_train_data. "
+                    "The function should have the signature `def convert_samples_to_train_data(args, samples) -> dict`."
+                ),
+            )
             return parser
 
         def add_rollout_buffer_arguments(parser):
@@ -1306,7 +1325,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
-
         return parser
 
     return add_slime_arguments
