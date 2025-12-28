@@ -411,13 +411,13 @@ class SGLangEngine(RayActor):
 
     def simulate_crash(self):
         if self.args.rollout_external or not getattr(self, "process", None):
-            logger.warning(
+            logger.info(
                 "simulate_crash called but no local engine process exists (rollout_external=%s); skip kill",
                 self.args.rollout_external,
             )
             return
 
-        logger.warning(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
+        logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
         kill_process_tree(self.process.pid)
 
 

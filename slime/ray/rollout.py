@@ -79,12 +79,13 @@ class RolloutManager:
         if self.args.use_fault_tolerance:
             self._health_monitor = RolloutHealthMonitor(self, args)
             if self.args.ci_test:
+                logger.info("Scheduling CI fault injection...")
                 self._schedule_ci_fault_injection()
 
     def _schedule_ci_fault_injection(self):
         def _inject_fault():
             # Wait for system to stabilize and training to start
-            time.sleep(200)
+            time.sleep(100)
             if self.all_rollout_engines and self.all_rollout_engines[0]:
                 logger.info("CI Fault Injection: Simulating crash on engine 0")
                 # We use remote call to make the actor process exit

@@ -82,6 +82,8 @@ class RolloutHealthMonitor:
                 f"Health check failed for rollout engine {rollout_engine_id} (ray timeout or error). Killing actor. Exception: {e}"
             )
             self._kill_engine(rollout_engine_id=rollout_engine_id)
+        else:
+            logger.info(f"Health check passed for rollout engine {rollout_engine_id}")
 
     def _kill_engine(self, rollout_engine_id: int):
         logger.info(f"Killing engine group {rollout_engine_id}...")
