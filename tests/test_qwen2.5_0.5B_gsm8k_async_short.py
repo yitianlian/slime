@@ -1,12 +1,11 @@
 import os
 import slime.utils.external_utils.command_utils as U
 
-FEW_GPU = U.get_bool_env_var("SLIME_TEST_FEW_GPU", "1")
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("SLIME_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 2 if FEW_GPU else 4
+NUM_GPUS = 4
 
 
 def prepare():
@@ -28,7 +27,7 @@ def execute():
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
-        "--rollout-max-response-len 512 "
+        "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.8 "
         "--over-sampling-batch-size 16 "
         "--dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
@@ -39,7 +38,7 @@ def execute():
         "--eval-interval 8 "
         "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
         "--n-samples-per-eval-prompt 1 "
-        "--eval-max-response-len 512 "
+        "--eval-max-response-len 1024 "
         "--eval-top-k 1 "
     )
 
@@ -51,7 +50,7 @@ def execute():
         "--expert-model-parallel-size 1 "
         "--expert-tensor-parallel-size 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 4096 "
+        "--max-tokens-per-gpu 9216 "
     )
 
     grpo_args = (
@@ -100,8 +99,8 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {1 if FEW_GPU else 2} "
+        f"--actor-num-gpus-per-node 1 "
+        f"--rollout-num-gpus 3 "
         "--megatron-to-hf-mode bridge "
     )
 
