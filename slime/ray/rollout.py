@@ -78,21 +78,28 @@ class RolloutManager:
         self._metric_checker = MetricChecker.maybe_create(args)
         if self.args.use_fault_tolerance:
             self._health_monitor = RolloutHealthMonitor(self, args)
-            if self.args.ci_test:
-                logger.info("Scheduling CI fault injection...")
-                self._schedule_ci_fault_injection()
+            self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
 
-    def _schedule_ci_fault_injection(self):
-        def _inject_fault():
-            # Wait for system to stabilize and training to start
-            time.sleep(100)
-            if self.all_rollout_engines and self.all_rollout_engines[0]:
-                logger.info("CI Fault Injection: Simulating crash on engine 0")
-                # We use remote call to make the actor process exit
+    def _try_ci_fault_injection(self):
+        """Try to inject fault during generate (when health monitor is running)."""
+        if not self._ci_fault_injection_pending:
+            return
+        
+        # Only inject fault once
+        self._ci_fault_injection_pending = False
+        
+        if self.all_rollout_engines and self.all_rollout_engines[0]:
+            logger.info("CI Fault Injection: Simulating crash on engine 0 during generate")
+            try:
+                # This will cause the ray actor to exit
                 self.all_rollout_engines[0].simulate_crash.remote()
-
-        t = threading.Thread(target=_inject_fault, daemon=True)
-        t.start()
+                # Wait for health monitor to detect the crash and mark engine as None
+                # health_check_interval + health_check_timeout + buffer
+                wait_time = self.args.rollout_health_check_interval + self.args.rollout_health_check_timeout + 5
+                logger.info(f"CI Fault Injection: Waiting {wait_time}s for health monitor to detect crash")
+                time.sleep(wait_time)
+            except Exception as e:
+                logger.warning(f"CI Fault Injection failed: {e}")
 
     def dispose(self):
         if self._metric_checker is not None:
@@ -102,7 +109,8 @@ class RolloutManager:
     @property
     def rollout_engines(self):
         # when doing multi-node serving, we will only send request to node-0 for each engine.
-        return self.all_rollout_engines[:: self.nodes_per_engine]
+        # Filter out None engines (killed by health monitor but not yet restarted)
+        return [e for e in self.all_rollout_engines[:: self.nodes_per_engine] if e is not None]
 
     def get_rollout_engines_and_lock(self):
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
@@ -115,6 +123,10 @@ class RolloutManager:
         monitor_started = self.args.use_fault_tolerance and self._health_monitor.start()
         start_time = time.time()
         try:
+            # CI fault injection: trigger crash during generate when health monitor is active
+            if self.args.use_fault_tolerance and rollout_id >= 2:
+                self._try_ci_fault_injection()
+            
             data, metrics = self._get_rollout_data(rollout_id=rollout_id)
             self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
             _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)

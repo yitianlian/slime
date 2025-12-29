@@ -418,7 +418,7 @@ class SGLangEngine(RayActor):
             return
 
         logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
-        kill_process_tree(self.process.pid)
+        self.shutdown()
 
 
 def _compute_server_args(
