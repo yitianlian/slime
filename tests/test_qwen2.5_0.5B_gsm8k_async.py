@@ -1,12 +1,11 @@
 import os
 import slime.utils.external_utils.command_utils as U
 
-FEW_GPU = U.get_bool_env_var("SLIME_TEST_FEW_GPU", "1")
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("SLIME_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 2 if FEW_GPU else 4
+NUM_GPUS = 4
 
 
 def prepare():
@@ -97,8 +96,8 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {1 if FEW_GPU else 2} "
+        "--actor-num-gpus-per-node 1 "
+        "--rollout-num-gpus 3 "
         "--megatron-to-hf-mode bridge "
     )
 
