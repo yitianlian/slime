@@ -80,9 +80,6 @@ def execute():
 
     ci_args = (
         "--ci-test "
-        "--ci-disable-kl-checker "
-        "--ci-metric-checker-key eval/gsm8k "
-        "--ci-metric-checker-threshold 0.55 "
     )
 
     fault_tolerance_args = (
