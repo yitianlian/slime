@@ -1,7 +1,6 @@
 import logging
 import multiprocessing
 import random
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -84,10 +83,10 @@ class RolloutManager:
         """Try to inject fault during generate (when health monitor is running)."""
         if not self._ci_fault_injection_pending:
             return
-        
+
         # Only inject fault once
         self._ci_fault_injection_pending = False
-        
+
         if self.all_rollout_engines and self.all_rollout_engines[0]:
             logger.info("CI Fault Injection: Simulating crash on engine 0 during generate")
             try:
@@ -126,7 +125,7 @@ class RolloutManager:
             # CI fault injection: trigger crash during generate when health monitor is active
             if self.args.use_fault_tolerance and rollout_id >= 2:
                 self._try_ci_fault_injection()
-            
+
             data, metrics = self._get_rollout_data(rollout_id=rollout_id)
             self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
             _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)

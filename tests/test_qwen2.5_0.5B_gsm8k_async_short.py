@@ -78,9 +78,7 @@ def execute():
         "--sglang-enable-metrics "
     )
 
-    ci_args = (
-        "--ci-test "
-    )
+    ci_args = "--ci-test "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
