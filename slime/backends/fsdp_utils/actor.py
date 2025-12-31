@@ -817,10 +817,9 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         # Always update rollout_engines reference to handle cases where engines were killed
         # (dead handles would cause ConnectionError even if not None)
-        if num_new_engines > 0 or self.weight_updater.rollout_engines != rollout_engines:
+        if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
-            if num_new_engines > 0:
-                dist.barrier(group=get_gloo_group())
+            dist.barrier(group=get_gloo_group())
 
         self.weight_updater.update_weights()
 

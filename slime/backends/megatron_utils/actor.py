@@ -493,11 +493,10 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         # Always update rollout_engines reference to handle cases where engines were killed
         # (dead handles would cause ConnectionError even if not None)
-        if num_new_engines > 0 or self.weight_updater.rollout_engines != rollout_engines:
+        if num_new_engines > 0:
             logger.info("Updating rollout engines reference.")
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
-            if num_new_engines > 0:
-                dist.barrier(group=get_gloo_group())
+            dist.barrier(group=get_gloo_group())
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
