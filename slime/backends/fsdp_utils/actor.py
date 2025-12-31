@@ -815,8 +815,6 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
             self.rollout_manager.get_rollout_engines_and_lock.remote()
         )
-        # Always update rollout_engines reference to handle cases where engines were killed
-        # (dead handles would cause ConnectionError even if not None)
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
             dist.barrier(group=get_gloo_group())
