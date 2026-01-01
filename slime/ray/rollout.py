@@ -163,10 +163,18 @@ class RolloutManager:
         """Offload rollout engines and pause health monitoring."""
         if self._health_monitor is not None:
             self._health_monitor.pause()
-        return ray.get([engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None])
+        return ray.get(
+            [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
+        )
 
     def onload(self, tags: list[str] | None = None):
-        return ray.get([engine.resume_memory_occupation.remote(tags=tags) for engine in self.rollout_engines if engine is not None])
+        return ray.get(
+            [
+                engine.resume_memory_occupation.remote(tags=tags)
+                for engine in self.rollout_engines
+                if engine is not None
+            ]
+        )
 
     def recover_rollout_engines(self):
         """Restart any dead rollout engines and update num_new_engines for update_weights detection."""
