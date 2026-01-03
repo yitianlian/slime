@@ -79,7 +79,6 @@ class RolloutManager:
         if self.args.use_fault_tolerance:
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()  # Start the monitor thread (in paused state)
-            self._health_monitor.resume()
             self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
 
     def _try_ci_fault_injection(self):
