@@ -9,6 +9,7 @@ import numpy as np
 import ray
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from slime.backends.sglang_utils.sglang_engine import SGLangEngine
 from slime.rollout.base_types import call_rollout_fn
@@ -73,6 +74,7 @@ class RolloutManager:
         self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
+        self.rollout_id = -1
 
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
@@ -134,10 +136,9 @@ class RolloutManager:
             _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
             data = self._convert_samples_to_train_data(data)
         finally:
-            if self.args.use_fault_tolerance and self.args.colocate:
-                self._health_monitor.pause()
-                self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
-        return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
+            self.rollout_id = rollout_id
+            # self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
+            return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:
@@ -159,26 +160,44 @@ class RolloutManager:
         self.data_source.load(rollout_id)
 
     def offload(self):
+        self.health_monitoring_pause()
         return ray.get(
             [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
         )
 
     def onload(self, tags: list[str] | None = None):
-        return ray.get(
+        res = ray.get(
             [
                 engine.resume_memory_occupation.remote(tags=tags)
                 for engine in self.rollout_engines
                 if engine is not None
             ]
         )
+        # Only resume health monitoring if KV cache is loaded
+        if GPU_MEMORY_TYPE_KV_CACHE in (tags or []):
+            self.health_monitoring_resume()
+        return res
 
     def recover_rollout_engines(self):
         """Restart any dead rollout engines and update num_new_engines for update_weights detection."""
-        self._health_monitor.pause()
-        logger.info(f"Engine list {self.all_rollout_engines}")
+        self.health_monitoring_pause()
+        if self.rollout_id == -1:
+            return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
+
+        dead_indices = [i for i, engine in enumerate(self.all_rollout_engines) if engine is None]
         self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
         logger.info(f"Recovered {self.num_new_engines} dead rollout engines")
-        return self.num_new_engines
+        assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
+        if self.args.offload_rollout and dead_indices:
+            new_engines = [self.all_rollout_engines[i] for i in dead_indices]
+            ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
+            ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
+
+        return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
+
+    def health_monitoring_pause(self) -> None:
+        if self._health_monitor is not None:
+            self._health_monitor.pause()
 
     def health_monitoring_resume(self) -> None:
         if self._health_monitor is not None:
