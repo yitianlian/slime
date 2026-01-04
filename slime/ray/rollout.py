@@ -126,19 +126,16 @@ class RolloutManager:
 
     def generate(self, rollout_id):
         start_time = time.time()
+        self.rollout_id = rollout_id
         if self.args.use_fault_tolerance:
             self._health_monitor.resume()
             if self.args.ci_test and rollout_id >= 2:
                 self._try_ci_fault_injection()
-        try:
-            data, metrics = self._get_rollout_data(rollout_id=rollout_id)
-            self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
-            _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
-            data = self._convert_samples_to_train_data(data)
-        finally:
-            self.rollout_id = rollout_id
-            # self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
-            return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
+        data, metrics = self._get_rollout_data(rollout_id=rollout_id)
+        self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
+        _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+        data = self._convert_samples_to_train_data(data)
+        return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:

@@ -13,7 +13,6 @@ from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoTokenizer
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from slime.ray.train_actor import TrainRayActor
 from slime.utils import train_dump_utils
 from slime.utils.context_utils import with_defer
