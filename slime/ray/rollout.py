@@ -159,9 +159,6 @@ class RolloutManager:
         self.data_source.load(rollout_id)
 
     def offload(self):
-        """Offload rollout engines and pause health monitoring."""
-        if self._health_monitor is not None:
-            self._health_monitor.pause()
         return ray.get(
             [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
         )

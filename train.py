@@ -89,8 +89,6 @@ def train(args):
         offload_train()
         onload_rollout()
         actor_model.update_weights()
-        if args.use_fault_tolerance:
-            ray.get(rollout_manager.health_monitoring_resume.remote())
 
         if args.offload_rollout:
             if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
