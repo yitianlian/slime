@@ -126,9 +126,8 @@ class RolloutManager:
     def generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
-        if self.args.use_fault_tolerance:
-            self._health_monitor.resume()
-            if self.args.ci_test and rollout_id >= 2:
+        self.health_monitoring_resume()
+        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
                 self._try_ci_fault_injection()
         data, metrics = self._get_rollout_data(rollout_id=rollout_id)
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
@@ -140,8 +139,7 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
-
-        # TODO: add fault tolerance to eval
+        self.health_monitoring_resume()
         result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
@@ -169,9 +167,6 @@ class RolloutManager:
                 if engine is not None
             ]
         )
-        # Only resume health monitoring if KV cache is loaded
-        if GPU_MEMORY_TYPE_KV_CACHE in (tags or []):
-            self.health_monitoring_resume()
         return res
 
     def recover_rollout_engines(self):
