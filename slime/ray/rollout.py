@@ -114,7 +114,6 @@ class RolloutManager:
     @property
     def rollout_engines(self):
         # when doing multi-node serving, we will only send request to node-0 for each engine.
-        # Filter out None engines (killed by health monitor but not yet restarted)
         return self.all_rollout_engines[:: self.nodes_per_engine]
 
     def get_rollout_engines_and_lock(self):
