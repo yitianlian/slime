@@ -73,7 +73,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fault-tolerance'))
     runs-on: self-hosted
     container:
-      image: slimerl/slime:latest
+      image: slimerl/slime:latestgi
       options: >
         --gpus all
         --ipc=host
