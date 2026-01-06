@@ -162,14 +162,13 @@ class RolloutManager:
         )
 
     def onload(self, tags: list[str] | None = None):
-        res = ray.get(
+        return ray.get(
             [
                 engine.resume_memory_occupation.remote(tags=tags)
                 for engine in self.rollout_engines
                 if engine is not None
             ]
         )
-        return res
 
     def recover_rollout_engines(self):
         """Restart any dead rollout engines and update num_new_engines for update_weights detection."""
