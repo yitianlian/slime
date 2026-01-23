@@ -180,7 +180,7 @@ class RolloutHealthMonitor:
 
     def _check_individual_results(self, engine_tasks: list) -> None:
         """Check health check results individually after batch failure."""
-        for engine_id, engine, ref in engine_tasks:
+        for engine_id, _engine, ref in engine_tasks:
             try:
                 result = ray.get(ref, timeout=0)  # Non-blocking check
                 if result is not True:
