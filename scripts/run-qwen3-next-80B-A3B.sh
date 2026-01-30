@@ -129,7 +129,6 @@ SGLANG_ARGS=(
    --sglang-speculative-num-steps 2
    --sglang-speculative-eagle-topk 1
    --sglang-speculative-num-draft-tokens 3
-   --sglang-enable-draft-weights-cpu-backup
 
    --sglang-max-running-requests 512
 )
@@ -147,6 +146,12 @@ MISC_ARGS=(
    --moe-token-dispatcher-type flex
    --moe-enable-deepep
 )
+
+SPEC_ARGS={
+   # --mtp-num-layers 1
+   # --enable-mtp-training
+   # --mtp-loss-scaling-factor 0.2
+}
 
 # launch the master node of ray in container
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
@@ -187,4 +192,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   ${SPEC_ARGS[@]}
