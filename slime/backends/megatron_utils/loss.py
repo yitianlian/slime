@@ -244,9 +244,7 @@ def apply_opd_kl_to_advantages(
 
     teacher_log_probs = rollout_data.get("teacher_log_probs")
     if teacher_log_probs is None:
-        raise ValueError(
-            f"OPD with opd_type='{args.opd_type}' requires teacher_log_probs, but it is missing."
-        )
+        raise ValueError(f"OPD with opd_type='{args.opd_type}' requires teacher_log_probs, but it is missing.")
 
     device = student_log_probs[0].device
     teacher_log_probs = [t.to(device=device) for t in teacher_log_probs]
@@ -256,7 +254,7 @@ def apply_opd_kl_to_advantages(
         reverse_kl = student_log_probs[i] - teacher_log_probs[i]
         advantages[i] = adv - args.opd_kl_coef * reverse_kl
         reverse_kls.append(reverse_kl)
-    
+
     # Store reverse KL for logging
     rollout_data["opd_reverse_kl"] = reverse_kls
 
