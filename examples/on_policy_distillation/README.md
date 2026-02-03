@@ -113,13 +113,12 @@ Using Qwen3-8B-Base model sfted on part of the [OpenThoughts3-1.2M](https://hugg
    # Use:
    --use-opd --opd-type megatron --opd-kl-coef 1.0 --opd-teacher-load /path/to/teacher_checkpoint
    ```
-   And remove the RM_ARGS (custom-rm-path, custom-reward-post-process-path, rm-url).
 
 3. **What happens if I set wrong arguments?**
    The system will raise clear errors:
    - `--use-opd` without `--opd-type`: Error asking you to specify type
-   - `--opd-type=megatron` without `--opd-teacher-load`: Error asking for teacher checkpoint
-   - `--opd-type=sglang` with `--opd-teacher-load`: Error indicating conflict
+   - `--opd-type megatron` without `--opd-teacher-load`: Error asking for teacher checkpoint
+   - `--opd-type sglang` with `--opd-teacher-load`: Error indicating conflict
 
 
 # References
