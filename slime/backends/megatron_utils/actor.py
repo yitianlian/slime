@@ -221,6 +221,21 @@ class MegatronTrainRayActor(TrainRayActor):
         for key in ["rollout_log_probs", "teacher_log_probs"]:
             if key not in rollout_data:
                 continue
+
+            # Check if all elements are None or all are non-None
+            log_probs_list = rollout_data[key]
+            none_count = sum(1 for x in log_probs_list if x is None)
+            if none_count == len(log_probs_list):
+                # All elements are None, skip processing
+                continue
+            elif none_count > 0:
+                # Mixed None and non-None, this is an error
+                raise ValueError(
+                    f"{key} contains mixed None and non-None values "
+                    f"({none_count} None out of {len(log_probs_list)} total). "
+                    f"All elements must be either None or all non-None."
+                )
+
             rollout_data[key] = [
                 torch.tensor(
                     (
