@@ -235,6 +235,9 @@ def apply_opd_kl_to_advantages(
         rollout_data: Dict containing "teacher_log_probs".
         advantages: List of advantage tensors to modify in-place.
         student_log_probs: List of student log-probability tensors.
+
+    References:
+        https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/distillation/train_on_policy.py
     """
     if not getattr(args, "use_opd", False):
         return

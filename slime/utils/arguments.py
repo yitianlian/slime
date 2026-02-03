@@ -730,42 +730,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for reference model. "
             )
-            # On-policy distillation (OPD) arguments
-            parser.add_argument(
-                "--use-opd",
-                action="store_true",
-                default=False,
-                help="Enable on-policy distillation (OPD). Must specify --opd-type when enabled.",
-            )
-            parser.add_argument(
-                "--opd-type",
-                type=str,
-                choices=["sglang", "megatron"],
-                default=None,
-                help=(
-                    "Type of on-policy distillation. "
-                    "'sglang': Teacher log-probs are obtained from external SGLang server during rollout. "
-                    "'megatron': Teacher model is loaded via --opd-teacher-load and forwarded during training."
-                ),
-            )
-            parser.add_argument(
-                "--opd-kl-coef",
-                type=float,
-                default=1.0,
-                help="On-policy distillation KL penalty coefficient. Default is 1.0.",
-            )
-            parser.add_argument(
-                "--opd-teacher-load",
-                type=str,
-                default=None,
-                help=(
-                    "The checkpoint for OPD teacher model. Required when --opd-type=megatron. "
-                    "The teacher model should have the same architecture as policy/ref model."
-                ),
-            )
-            parser.add_argument(
-                "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
-            )
             reset_arg(parser, "--load", type=str, default=None)
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
@@ -997,6 +961,49 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=1e-4,
                 help="The threshold for Off-Policy Sequence Masking (OPSM).",
+            )
+            return parser
+
+        def add_on_policy_distillation_arguments(parser):
+            """Add on-policy distillation (OPD) related arguments.
+            
+            OPD is orthogonal to advantage estimators and can be applied on top of
+            any estimator (GRPO, PPO, etc.) by adding a KL penalty to advantages.
+            """
+            parser.add_argument(
+                "--use-opd",
+                action="store_true",
+                default=False,
+                help="Enable on-policy distillation (OPD). Must specify --opd-type when enabled.",
+            )
+            parser.add_argument(
+                "--opd-type",
+                type=str,
+                choices=["sglang", "megatron"],
+                default=None,
+                help=(
+                    "Type of on-policy distillation. "
+                    "'sglang': Teacher log-probs are obtained from external SGLang server during rollout. "
+                    "'megatron': Teacher model is loaded via --opd-teacher-load and forwarded during training."
+                ),
+            )
+            parser.add_argument(
+                "--opd-kl-coef",
+                type=float,
+                default=1.0,
+                help="On-policy distillation KL penalty coefficient. Default is 1.0.",
+            )
+            parser.add_argument(
+                "--opd-teacher-load",
+                type=str,
+                default=None,
+                help=(
+                    "The checkpoint for OPD teacher model. Required when --opd-type=megatron. "
+                    "The teacher model should have the same architecture as policy/ref model."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
             )
             return parser
 
@@ -1446,6 +1453,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
+        parser = add_on_policy_distillation_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_router_arguments(parser)
