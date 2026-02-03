@@ -239,8 +239,6 @@ def apply_opd_kl_to_advantages(
     References:
         https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/distillation/train_on_policy.py
     """
-    if not getattr(args, "use_opd", False):
-        return
 
     if student_log_probs is None:
         return
@@ -357,12 +355,13 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         raise NotImplementedError(f"advantage_estimator {args.advantage_estimator} is not supported. ")
 
     # Apply on-policy distillation KL penalty to advantages (orthogonal to advantage estimator)
-    apply_opd_kl_to_advantages(
-        args=args,
-        rollout_data=rollout_data,
-        advantages=advantages,
-        student_log_probs=log_probs,
-    )
+    if args.use_opd:
+        apply_opd_kl_to_advantages(
+            args=args,
+            rollout_data=rollout_data,
+            advantages=advantages,
+            student_log_probs=log_probs,
+        )
 
     # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.
     if args.normalize_advantages:

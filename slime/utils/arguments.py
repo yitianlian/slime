@@ -966,7 +966,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
 
         def add_on_policy_distillation_arguments(parser):
             """Add on-policy distillation (OPD) related arguments.
-            
+
             OPD is orthogonal to advantage estimators and can be applied on top of
             any estimator (GRPO, PPO, etc.) by adding a KL penalty to advantages.
             """
