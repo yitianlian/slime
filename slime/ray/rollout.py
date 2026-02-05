@@ -131,9 +131,20 @@ class RolloutManager:
         start_time = time.time()
         self.rollout_id = rollout_id
         self.health_monitoring_resume()
+
+        # Start profiling if configured for this rollout
+        should_profile = self._should_profile_rollout(rollout_id)
+        if should_profile:
+            self._start_auto_profile(rollout_id)
+
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metrics = self._get_rollout_data(rollout_id=rollout_id)
+
+        # Stop profiling after this step's rollout
+        if should_profile:
+            self.stop_rollout_profile()
+
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = self._convert_samples_to_train_data(data)
@@ -210,6 +221,91 @@ class RolloutManager:
 
     def check_weights(self, action: str):
         return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+
+    def _should_profile_rollout(self, rollout_id: int) -> bool:
+        """Check if this rollout should be profiled based on training step range.
+
+        Args:
+            rollout_id: The current training step (0-indexed).
+
+        Returns:
+            True if profiling is enabled and rollout_id is in [start_step, end_step).
+        """
+        if not self.args.enable_rollout_profile:
+            return False
+
+        start_step = self.args.rollout_profile_start_step
+        end_step = self.args.rollout_profile_end_step
+        return start_step <= rollout_id < end_step
+
+    def _start_auto_profile(self, rollout_id: int):
+
+        base_output_dir = os.path.join(self.args.rollout_profile_output_dir, f"step_{rollout_id}")
+        os.makedirs(base_output_dir, exist_ok=True)
+        logger.info(f"Starting rollout profiling for step={rollout_id}, output_dir={base_output_dir}")
+        self._start_rollout_profile_per_engine(
+            base_output_dir=base_output_dir,
+            activities=self.args.rollout_profile_activities,
+        )
+
+    def _start_rollout_profile_per_engine(
+        self,
+        base_output_dir: str,
+        activities: list[str] | None = None,
+    ) -> list:
+        """Start profiling on all rollout engines, each saving to its own subdirectory.
+
+        Args:
+            base_output_dir: Base directory for profile traces.
+                Each engine saves to base_output_dir/engine_{i}/
+            activities: List of activities to profile, e.g. ["CPU", "GPU"].
+
+        Returns:
+            List of responses from each engine.
+        """
+        if not self.rollout_engines:
+            logger.warning("No rollout engines available for profiling")
+            return []
+
+        results = []
+        for i, engine in enumerate(self.rollout_engines):
+            engine_output_dir = os.path.join(base_output_dir, f"engine_{i}")
+            os.makedirs(engine_output_dir, exist_ok=True)
+            try:
+                result = ray.get(
+                    engine.start_profile.remote(
+                        output_dir=engine_output_dir,
+                        activities=activities,
+                    )
+                )
+                results.append(result)
+                logger.info(f"Started profiling on engine {i}, output_dir={engine_output_dir}")
+            except Exception as e:
+                logger.error(f"Failed to start profiling on engine {i}: {e}")
+                results.append(None)
+
+        return results
+
+    def stop_rollout_profile(self) -> list:
+        """Stop profiling on all rollout engines.
+
+        Returns:
+            List of responses from each engine.
+        """
+        if not self.rollout_engines:
+            return []
+
+        results = []
+        for i, engine in enumerate(self.rollout_engines):
+            try:
+                result = ray.get(engine.stop_profile.remote())
+                results.append(result)
+                logger.info(f"Stopped profiling on engine {i}")
+            except Exception as e:
+                logger.error(f"Failed to stop profiling on engine {i}: {e}")
+                results.append(None)
+
+        return results
 
     def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
