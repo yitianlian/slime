@@ -267,22 +267,25 @@ class RolloutManager:
             logger.warning("No rollout engines available for profiling")
             return []
 
-        results = []
+        # Prepare output directories and submit all profile requests in parallel
+        futures = []
         for i, engine in enumerate(self.rollout_engines):
             engine_output_dir = os.path.join(base_output_dir, f"engine_{i}")
             os.makedirs(engine_output_dir, exist_ok=True)
-            try:
-                result = ray.get(
-                    engine.start_profile.remote(
-                        output_dir=engine_output_dir,
-                        activities=activities,
-                    )
+            futures.append(
+                engine.start_profile.remote(
+                    output_dir=engine_output_dir,
+                    activities=activities,
                 )
-                results.append(result)
-                logger.info(f"Started profiling on engine {i}, output_dir={engine_output_dir}")
-            except Exception as e:
-                logger.error(f"Failed to start profiling on engine {i}: {e}")
-                results.append(None)
+            )
+
+        # Wait for all results in parallel
+        try:
+            results = ray.get(futures)
+            logger.info(f"Started profiling on {len(results)} engines, base_output_dir={base_output_dir}")
+        except Exception as e:
+            logger.error(f"Failed to start profiling on some engines: {e}")
+            results = [None] * len(futures)
 
         return results
 
@@ -295,15 +298,16 @@ class RolloutManager:
         if not self.rollout_engines:
             return []
 
-        results = []
-        for i, engine in enumerate(self.rollout_engines):
-            try:
-                result = ray.get(engine.stop_profile.remote())
-                results.append(result)
-                logger.info(f"Stopped profiling on engine {i}")
-            except Exception as e:
-                logger.error(f"Failed to stop profiling on engine {i}: {e}")
-                results.append(None)
+        # Submit all stop requests in parallel
+        futures = [engine.stop_profile.remote() for engine in self.rollout_engines]
+
+        # Wait for all results
+        try:
+            results = ray.get(futures)
+            logger.info(f"Stopped profiling on {len(results)} engines")
+        except Exception as e:
+            logger.error(f"Failed to stop profiling on some engines: {e}")
+            results = [None] * len(futures)
 
         return results
 
