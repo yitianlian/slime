@@ -1214,41 +1214,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--check-weight-update-equal", action="store_true")
             return parser
 
-        def add_profile_arguments(parser):
-            """Arguments for profiling SGLang rollout engines."""
-            parser.add_argument(
-                "--enable-rollout-profile",
-                action="store_true",
-                default=False,
-                help="Enable profiling for SGLang rollout engines.",
-            )
-            parser.add_argument(
-                "--rollout-profile-output-dir",
-                type=str,
-                default="/tmp/rollout_profiles",
-                help="Directory to save SGLang rollout profile traces.",
-            )
-            parser.add_argument(
-                "--rollout-profile-start-step",
-                type=int,
-                default=0,
-                help="Training step to start profiling (inclusive). Default is 0.",
-            )
-            parser.add_argument(
-                "--rollout-profile-end-step",
-                type=int,
-                default=1,
-                help="Training step to end profiling (exclusive). Default is 1 (only profile step 0).",
-            )
-            parser.add_argument(
-                "--rollout-profile-activities",
-                type=str,
-                nargs="+",
-                default=["GPU"],
-                help="Activities to profile: CPU, GPU. Default is ['CPU', 'GPU'].",
-            )
-            return parser
-
         def add_network_arguments(parser):
             parser.add_argument("--http-proxy", type=str, default=None)
             parser.add_argument("--use-distributed-post", action="store_true", default=False)
@@ -1493,7 +1458,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         parser = add_tensorboard_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
-        parser = add_profile_arguments(parser)
         parser = add_sglang_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
