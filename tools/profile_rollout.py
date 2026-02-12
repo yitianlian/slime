@@ -1,7 +1,8 @@
 import argparse
-import requests
-import json
 import sys
+
+import requests
+
 
 def get_workers(router_url):
     try:
@@ -12,6 +13,7 @@ def get_workers(router_url):
         print(f"Error fetching workers from router: {e}")
         return []
 
+
 def start_profile(worker_url, args):
     payload = {
         "output_dir": args.output_dir,
@@ -19,7 +21,7 @@ def start_profile(worker_url, args):
         "activities": args.activities,
         "profile_by_stage": args.profile_by_stage,
         "with_stack": args.with_stack,
-        "record_shapes": args.record_shapes
+        "record_shapes": args.record_shapes,
     }
     try:
         print(f"Starting profile on {worker_url} for {args.num_steps} steps...")
@@ -29,6 +31,7 @@ def start_profile(worker_url, args):
     except Exception as e:
         print(f"Failed to start profile on {worker_url}: {e}")
 
+
 def stop_profile(worker_url):
     try:
         print(f"Stopping profile on {worker_url}...")
@@ -37,6 +40,7 @@ def stop_profile(worker_url):
         print(f"Successfully stopped profile on {worker_url}")
     except Exception as e:
         print(f"Failed to stop profile on {worker_url}: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Automate SGLang profiling across all workers via router.")
@@ -62,11 +66,12 @@ def main():
         worker_url = worker.get("url")
         if not worker_url:
             continue
-        
+
         if args.action == "start":
             start_profile(worker_url, args)
         else:
             stop_profile(worker_url)
+
 
 if __name__ == "__main__":
     main()
