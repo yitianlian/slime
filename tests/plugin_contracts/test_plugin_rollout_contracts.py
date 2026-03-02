@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
-from plugin_contracts._shared import get_contract_path, install_paths, install_stubs, run_contract_test_for_file
+from ._shared import get_contract_path, install_paths, install_stubs, run_contract_test_for_file
 
 install_paths()
 install_stubs(with_sglang_router=True, with_transformers=True)
