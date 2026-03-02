@@ -445,12 +445,13 @@ slime 现在也提供了一组 CPU 契约测试，用于校验这些 customizati
 python -m pytest \
   tests/plugin_contracts/test_plugin_rollout_contracts.py \
   tests/plugin_contracts/test_plugin_generate_contracts.py \
-  tests/plugin_contracts/test_plugin_generate_contracts.py \
   tests/plugin_contracts/test_plugin_path_loading_contracts.py \
   tests/plugin_contracts/test_plugin_runtime_hook_contracts.py
 ```
 
 每个测试文件也支持直接通过 `python tests/plugin_contracts/<file>.py` 执行，这样可以和 `run-ci-changed` 保持兼容。
+
+CI 中也提供了独立的 `run-ci-plugin-contracts` label，给 PR 打上该标签后会并行运行上述全部四个契约测试（无需 GPU）。
 
 如果你要验证自己的自定义实现，可以直接设置环境变量，例如 `SLIME_CONTRACT_ROLLOUT_FUNCTION_PATH`、`SLIME_CONTRACT_CUSTOM_RM_PATH`，也可以在直接运行测试文件时传参，例如：
 
@@ -459,4 +460,4 @@ python tests/plugin_contracts/test_plugin_rollout_contracts.py \
   --rollout-function-path my_project.custom_rollout.generate_rollout
 ```
 
-如果你要验证自己的自定义实现，可以把这些测试中使用的插件路径替换成你的模块路径，同时保留对函数签名、返回结构和副作用的断言。
+验证时只需将插件路径替换成你的模块路径，断言逻辑（函数签名、返回结构、副作用）保持不变即可。
