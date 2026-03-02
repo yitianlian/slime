@@ -49,6 +49,7 @@
 
     'e2e-test-plugin-contracts': {
       'label': 'run-ci-plugin-contracts',
+      'always': True,
       'tests': [
         {'test_file': 'plugin_contracts/test_plugin_rollout_contracts.py', 'num_gpus': 0},
         {'test_file': 'plugin_contracts/test_plugin_runtime_hook_contracts.py', 'num_gpus': 0},
@@ -103,7 +104,11 @@ concurrency:
 jobs:
 <% for job_name, config in jobs.items() %>
   << job_name >>:
+<% if config.get('always') %>
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+<% else %>
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
+<% endif %>
     runs-on: self-hosted
     container:
       image: << config.image if config.image else 'slimerl/slime:latest' >>

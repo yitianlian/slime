@@ -26,7 +26,9 @@ concurrency:
 jobs:
 
   e2e-test-short:
+
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
+
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -82,7 +84,9 @@ jobs:
           fi
 
   e2e-test-fsdp:
+
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
+
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -138,7 +142,9 @@ jobs:
           fi
 
   e2e-test-megatron:
+
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
+
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -194,7 +200,9 @@ jobs:
           fi
 
   e2e-test-precision:
+
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
+
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -250,7 +258,9 @@ jobs:
           fi
 
   e2e-test-ckpt:
+
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
+
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -306,7 +316,9 @@ jobs:
           fi
 
   e2e-test-plugin-contracts:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-plugin-contracts'))
+
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -362,7 +374,9 @@ jobs:
           fi
 
   e2e-test-image:
+
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
+
     runs-on: self-hosted
     container:
       image: slimerl/slime-test:latest
