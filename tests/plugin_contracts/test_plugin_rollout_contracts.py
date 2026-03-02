@@ -1,40 +1,14 @@
 from __future__ import annotations
 
 import inspect
-import os
-import sys
-import types
-from argparse import ArgumentParser
-from pathlib import Path
 
 import pytest
+from plugin_contracts._shared import get_contract_path, install_paths, install_stubs, run_contract_test_for_file
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-if "ray" not in sys.modules:
-    ray_mod = types.ModuleType("ray")
-    ray_mod._private = types.SimpleNamespace(services=types.SimpleNamespace(get_node_ip_address=lambda: "127.0.0.1"))
-    sys.modules["ray"] = ray_mod
-if "sglang_router" not in sys.modules:
-    mod = types.ModuleType("sglang_router")
-    mod.__version__ = "0.2.3"
-    sys.modules["sglang_router"] = mod
-if "transformers" not in sys.modules:
-    mod = types.ModuleType("transformers")
-    mod.AutoTokenizer = type("AutoTokenizer", (), {"from_pretrained": staticmethod(lambda *args, **kwargs: object())})
-    mod.AutoProcessor = type(
-        "AutoProcessor",
-        (),
-        {"from_pretrained": staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))},
-    )
-    mod.PreTrainedTokenizerBase = type("PreTrainedTokenizerBase", (), {})
-    mod.ProcessorMixin = type("ProcessorMixin", (), {})
-    sys.modules["transformers"] = mod
+install_paths()
+install_stubs(with_sglang_router=True, with_transformers=True)
 
 NUM_GPUS = 0
-ENV_PREFIX = "SLIME_CONTRACT_"
 DEFAULT_ROLLOUT_FUNCTION_PATH = "slime.rollout.sglang_rollout.generate_rollout"
 REFERENCE_ROLLOUT_FUNCTION_PATH = "plugin_contracts.test_plugin_rollout_contracts.valid_rollout_function"
 
@@ -44,21 +18,8 @@ from slime.utils.misc import load_function
 from slime.utils.types import Sample
 
 
-def contract_env_name(key: str) -> str:
-    return f"{ENV_PREFIX}{key}"
-
-
-def get_contract_path(key: str, default: str) -> str:
-    return os.environ.get(contract_env_name(key), default)
-
-
 def run_contract_test_file() -> None:
-    parser = ArgumentParser()
-    parser.add_argument("--rollout-function-path", default=None)
-    args, remaining = parser.parse_known_args()
-    if args.rollout_function_path:
-        os.environ[contract_env_name("ROLLOUT_FUNCTION_PATH")] = args.rollout_function_path
-    raise SystemExit(pytest.main([__file__, *remaining]))
+    run_contract_test_for_file(__file__, path_args=["rollout-function-path"])
 
 
 def make_sample(index: int, reward: float = 1.0) -> Sample:

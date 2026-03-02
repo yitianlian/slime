@@ -426,41 +426,25 @@ For detailed explanation of R3 and SlimeRouter, see [Slime Router](../advanced/s
 
 slime also provides CPU-only contract tests for customization interfaces. These tests resolve components through import-path strings, so they can validate both built-in hooks and user-defined implementations passed through the same CLI arguments used by training.
 
-The tests live under `tests/plugin_contracts/`, with one file per customization argument:
+The tests live under `tests/plugin_contracts/` and are grouped by hook shape:
 
-- `--rollout-function-path` -> `tests/plugin_contracts/test_plugin_rollout_contracts.py`
-- `--eval-function-path` -> `tests/plugin_contracts/test_plugin_eval_function_contracts.py`
-- `--custom-generate-function-path` -> `tests/plugin_contracts/test_plugin_generate_contracts.py`
-- `--custom-rm-path` -> `tests/plugin_contracts/test_plugin_custom_rm_contracts.py`
-- `--dynamic-sampling-filter-path` -> `tests/plugin_contracts/test_plugin_dynamic_filter_contracts.py`
-- `--buffer-filter-path` -> `tests/plugin_contracts/test_plugin_buffer_filter_contracts.py`
-- `--data-source-path` -> `tests/plugin_contracts/test_plugin_data_source_contracts.py`
-- `--custom-rollout-log-function-path` -> `tests/plugin_contracts/test_plugin_custom_rollout_log_contracts.py`
-- `--custom-eval-rollout-log-function-path` -> `tests/plugin_contracts/test_plugin_custom_eval_rollout_log_contracts.py`
-- `--custom-reward-post-process-path` -> `tests/plugin_contracts/test_plugin_custom_reward_post_process_contracts.py`
-- `--custom-convert-samples-to-train-data-path` -> `tests/plugin_contracts/test_plugin_custom_convert_samples_to_train_data_contracts.py`
-- `--rollout-sample-filter-path` -> `tests/plugin_contracts/test_plugin_rollout_sample_filter_contracts.py`
-- `--rollout-all-samples-process-path` -> `tests/plugin_contracts/test_plugin_rollout_all_samples_process_contracts.py`
-- `--rollout-data-postprocess-path` -> `tests/plugin_contracts/test_plugin_rollout_data_postprocess_contracts.py`
+- `tests/plugin_contracts/test_plugin_rollout_contracts.py`
+  Covers `--rollout-function-path`
+- `tests/plugin_contracts/test_plugin_generate_contracts.py`
+  Covers `--custom-generate-function-path`
+- `tests/plugin_contracts/test_plugin_path_loading_contracts.py`
+  Covers `--eval-function-path`, `--custom-rm-path`, `--dynamic-sampling-filter-path`, `--buffer-filter-path`, `--data-source-path`, `--rollout-sample-filter-path`, and `--rollout-all-samples-process-path`
+- `tests/plugin_contracts/test_plugin_runtime_hook_contracts.py`
+  Covers `--custom-rollout-log-function-path`, `--custom-eval-rollout-log-function-path`, `--custom-reward-post-process-path`, `--custom-convert-samples-to-train-data-path`, and `--rollout-data-postprocess-path`
 
 Run all customization contract tests locally:
 
 ```bash
 python -m pytest \
   tests/plugin_contracts/test_plugin_rollout_contracts.py \
-  tests/plugin_contracts/test_plugin_eval_function_contracts.py \
   tests/plugin_contracts/test_plugin_generate_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_rm_contracts.py \
-  tests/plugin_contracts/test_plugin_dynamic_filter_contracts.py \
-  tests/plugin_contracts/test_plugin_buffer_filter_contracts.py \
-  tests/plugin_contracts/test_plugin_data_source_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_rollout_log_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_eval_rollout_log_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_reward_post_process_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_convert_samples_to_train_data_contracts.py \
-  tests/plugin_contracts/test_plugin_rollout_sample_filter_contracts.py \
-  tests/plugin_contracts/test_plugin_rollout_all_samples_process_contracts.py \
-  tests/plugin_contracts/test_plugin_rollout_data_postprocess_contracts.py
+  tests/plugin_contracts/test_plugin_path_loading_contracts.py \
+  tests/plugin_contracts/test_plugin_runtime_hook_contracts.py
 ```
 
 Each test file can also be executed directly with `python tests/plugin_contracts/<file>.py`, which keeps them compatible with `run-ci-changed`.

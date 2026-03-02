@@ -115,19 +115,9 @@ cd .github/workflows && python generate_github_workflows.py
 ```bash
 python -m pytest \
   tests/plugin_contracts/test_plugin_rollout_contracts.py \
-  tests/plugin_contracts/test_plugin_eval_function_contracts.py \
   tests/plugin_contracts/test_plugin_generate_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_rm_contracts.py \
-  tests/plugin_contracts/test_plugin_dynamic_filter_contracts.py \
-  tests/plugin_contracts/test_plugin_buffer_filter_contracts.py \
-  tests/plugin_contracts/test_plugin_data_source_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_rollout_log_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_eval_rollout_log_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_reward_post_process_contracts.py \
-  tests/plugin_contracts/test_plugin_custom_convert_samples_to_train_data_contracts.py \
-  tests/plugin_contracts/test_plugin_rollout_sample_filter_contracts.py \
-  tests/plugin_contracts/test_plugin_rollout_all_samples_process_contracts.py \
-  tests/plugin_contracts/test_plugin_rollout_data_postprocess_contracts.py
+  tests/plugin_contracts/test_plugin_path_loading_contracts.py \
+  tests/plugin_contracts/test_plugin_runtime_hook_contracts.py
 ```
 
 这些测试文件也支持直接执行 `python tests/plugin_contracts/<file>.py`。它们声明了 `NUM_GPUS = 0`，因此可以被 `run-ci-changed` 自动识别，同时不会被当作 GPU 重型端到端测试。
