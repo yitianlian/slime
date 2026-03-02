@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import types
 from contextlib import contextmanager
@@ -122,8 +123,7 @@ def patch_generate_state(monkeypatch):
     return sglang_rollout
 
 
-@pytest.mark.asyncio
-async def test_generate_and_rm_default_generate_branch_is_stable(patch_generate_state, monkeypatch):
+def test_generate_and_rm_default_generate_branch_is_stable(patch_generate_state, monkeypatch):
     sglang_rollout = patch_generate_state
 
     async def official_default_generate(args, sample: Sample, sampling_params: dict):
@@ -136,37 +136,39 @@ async def test_generate_and_rm_default_generate_branch_is_stable(patch_generate_
 
     monkeypatch.setattr(sglang_rollout, "generate", official_default_generate)
 
-    result = await generate_and_rm(
-        make_args(custom_generate_function_path=None),
-        Sample(index=0, prompt="prompt"),
-        sampling_params={"temperature": 0.3},
-        evaluation=False,
+    result = asyncio.run(
+        generate_and_rm(
+            make_args(custom_generate_function_path=None),
+            Sample(index=0, prompt="prompt"),
+            sampling_params={"temperature": 0.3},
+            evaluation=False,
+        )
     )
     assert_sample_contract(result)
     assert result.response == "default-generate"
 
 
-@pytest.mark.asyncio
-async def test_generate_and_rm_prefers_per_sample_generate_function(patch_generate_state):
+def test_generate_and_rm_prefers_per_sample_generate_function(patch_generate_state):
     args = make_args(custom_generate_function_path=REFERENCE_CUSTOM_GENERATE_PATH)
     sample = Sample(index=0, prompt="prompt", generate_function_path=REFERENCE_CUSTOM_GENERATE_WITH_EVAL_PATH)
-    result = await generate_and_rm(args, sample, sampling_params={"temperature": 0.3}, evaluation=True)
+    result = asyncio.run(generate_and_rm(args, sample, sampling_params={"temperature": 0.3}, evaluation=True))
     assert_sample_contract(result)
     assert result.metadata["evaluation"] is True
 
 
-@pytest.mark.asyncio
-async def test_custom_generate_function_path_supports_user_override(patch_generate_state):
+def test_custom_generate_function_path_supports_user_override(patch_generate_state):
     custom_generate_path = get_contract_path(
         "CUSTOM_GENERATE_FUNCTION_PATH",
         REFERENCE_CUSTOM_GENERATE_PATH,
     )
     assert_custom_generate_signature_matches_expected(load_function(custom_generate_path))
-    result = await generate_and_rm(
-        make_args(custom_generate_function_path=custom_generate_path),
-        Sample(index=0, prompt="prompt"),
-        sampling_params={"temperature": 0.3},
-        evaluation=False,
+    result = asyncio.run(
+        generate_and_rm(
+            make_args(custom_generate_function_path=custom_generate_path),
+            Sample(index=0, prompt="prompt"),
+            sampling_params={"temperature": 0.3},
+            evaluation=False,
+        )
     )
     assert_sample_contract(result)
 

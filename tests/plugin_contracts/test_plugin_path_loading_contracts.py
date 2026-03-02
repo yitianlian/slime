@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
 from dataclasses import dataclass
@@ -306,36 +307,40 @@ def test_path_loading_path_aligns_with_expected_format(case: SyncCase):
     case.path_check(get_contract_path(case.env_key, case.default_path))
 
 
-@pytest.mark.asyncio
-async def test_custom_rm_default_behavior_is_stable():
-    reward = await async_rm(make_args(rm_type="random"), make_sample(4))
-    rewards = await batched_async_rm(make_args(group_rm=True, rm_type="random"), [make_sample(1), make_sample(2)])
+def test_custom_rm_default_behavior_is_stable():
+    reward = asyncio.run(async_rm(make_args(rm_type="random"), make_sample(4)))
+    rewards = asyncio.run(
+        batched_async_rm(make_args(group_rm=True, rm_type="random"), [make_sample(1), make_sample(2)])
+    )
     assert isinstance(reward, (int, float))
     assert isinstance(rewards, list) and len(rewards) == 2
 
 
-@pytest.mark.asyncio
-async def test_custom_rm_path_aligns_with_expected_format():
+def test_custom_rm_path_aligns_with_expected_format():
     path = get_contract_path("CUSTOM_RM_PATH")
     if get_contract_path("GROUP_RM") == "1":
         fn = load_function(path or "plugin_contracts.test_plugin_path_loading_contracts.reference_batched_rm")
         assert tuple(inspect.signature(fn).parameters)[:2] == ("args", "samples")
-        rewards = await batched_async_rm(
-            make_args(
-                group_rm=True,
-                custom_rm_path=path or "plugin_contracts.test_plugin_path_loading_contracts.reference_batched_rm",
-            ),
-            [make_sample(0), make_sample(1)],
+        rewards = asyncio.run(
+            batched_async_rm(
+                make_args(
+                    group_rm=True,
+                    custom_rm_path=path or "plugin_contracts.test_plugin_path_loading_contracts.reference_batched_rm",
+                ),
+                [make_sample(0), make_sample(1)],
+            )
         )
         assert isinstance(rewards, list) and len(rewards) == 2
     else:
         fn = load_function(path or "plugin_contracts.test_plugin_path_loading_contracts.reference_single_rm")
         assert tuple(inspect.signature(fn).parameters)[:2] == ("args", "sample")
-        reward = await async_rm(
-            make_args(
-                custom_rm_path=path or "plugin_contracts.test_plugin_path_loading_contracts.reference_single_rm"
-            ),
-            make_sample(3),
+        reward = asyncio.run(
+            async_rm(
+                make_args(
+                    custom_rm_path=path or "plugin_contracts.test_plugin_path_loading_contracts.reference_single_rm"
+                ),
+                make_sample(3),
+            )
         )
         assert isinstance(reward, (int, float))
 
