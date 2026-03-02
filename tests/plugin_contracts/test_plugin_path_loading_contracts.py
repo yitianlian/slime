@@ -6,7 +6,25 @@ from dataclasses import dataclass
 
 import pytest
 
-from ._shared import contract_env_name, get_contract_path, install_paths, install_stubs, run_contract_test_for_file
+try:
+    from ._shared import contract_env_name, get_contract_path, install_paths, install_stubs, run_contract_test_for_file
+except ImportError:
+    try:
+        from plugin_contracts._shared import (
+            contract_env_name,
+            get_contract_path,
+            install_paths,
+            install_stubs,
+            run_contract_test_for_file,
+        )
+    except ImportError:
+        from _shared import (
+            contract_env_name,
+            get_contract_path,
+            install_paths,
+            install_stubs,
+            run_contract_test_for_file,
+        )
 
 install_paths()
 install_stubs(with_sglang_router=True, with_transformers=True)
