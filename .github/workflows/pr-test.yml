@@ -70,7 +70,16 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          TEST_PATH="${{ matrix.info.test_file }}"
+          if [[ "$TEST_PATH" != tests/* ]]; then
+            TEST_PATH="tests/$TEST_PATH"
+          fi
+          if [ "${{ matrix.info.num_gpus }}" = "0" ]; then
+            python "$TEST_PATH"
+          else
+            python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python "$TEST_PATH"
+          fi
 
   e2e-test-fsdp:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
@@ -117,7 +126,16 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          TEST_PATH="${{ matrix.info.test_file }}"
+          if [[ "$TEST_PATH" != tests/* ]]; then
+            TEST_PATH="tests/$TEST_PATH"
+          fi
+          if [ "${{ matrix.info.num_gpus }}" = "0" ]; then
+            python "$TEST_PATH"
+          else
+            python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python "$TEST_PATH"
+          fi
 
   e2e-test-megatron:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
@@ -164,7 +182,12 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          TEST_PATH="${{ matrix.info.test_file }}"
+          if [[ "$TEST_PATH" != tests/* ]]; then
+            TEST_PATH="tests/$TEST_PATH"
+          fi
+          python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python "$TEST_PATH"
 
   e2e-test-precision:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
@@ -211,7 +234,12 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          TEST_PATH="${{ matrix.info.test_file }}"
+          if [[ "$TEST_PATH" != tests/* ]]; then
+            TEST_PATH="tests/$TEST_PATH"
+          fi
+          python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python "$TEST_PATH"
 
   e2e-test-ckpt:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
@@ -258,7 +286,12 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          TEST_PATH="${{ matrix.info.test_file }}"
+          if [[ "$TEST_PATH" != tests/* ]]; then
+            TEST_PATH="tests/$TEST_PATH"
+          fi
+          python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python "$TEST_PATH"
 
   e2e-test-image:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
@@ -305,7 +338,12 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          TEST_PATH="${{ matrix.info.test_file }}"
+          if [[ "$TEST_PATH" != tests/* ]]; then
+            TEST_PATH="tests/$TEST_PATH"
+          fi
+          python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python "$TEST_PATH"
 
 
   e2e-test-changed-detect:
@@ -334,7 +372,7 @@ jobs:
         id: detect
         shell: bash
         run: |
-          CHANGED=$(git diff --name-only --diff-filter=AM origin/main...HEAD -- 'tests/test_*.py' || true)
+          CHANGED=$(git diff --name-only --diff-filter=AM origin/main...HEAD -- 'tests/test_*.py' 'tests/plugin_contracts/test_*.py' || true)
           if [ -z "$CHANGED" ]; then
             echo "No new or modified test files found."
             echo "has_tests=false" >> $GITHUB_OUTPUT
@@ -345,12 +383,11 @@ jobs:
             MATRIX="["
             FIRST=true
             for filepath in $CHANGED; do
-              filename=$(basename "$filepath")
               # Extract NUM_GPUS from the test file, default to 8
               NGPU=$(grep -oP '^NUM_GPUS\s*=\s*\K\d+' "$filepath" | head -1)
               NGPU=${NGPU:-8}
               if [ "$FIRST" = true ]; then FIRST=false; else MATRIX+=","; fi
-              MATRIX+="{\"test_file\":\"$filename\",\"num_gpus\":$NGPU}"
+              MATRIX+="{\"test_file\":\"$filepath\",\"num_gpus\":$NGPU}"
             done
             MATRIX+="]"
             echo "has_tests=true" >> $GITHUB_OUTPUT
@@ -403,4 +440,13 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          TEST_PATH="${{ matrix.info.test_file }}"
+          if [[ "$TEST_PATH" != tests/* ]]; then
+            TEST_PATH="tests/$TEST_PATH"
+          fi
+          if [ "${{ matrix.info.num_gpus }}" = "0" ]; then
+            python "$TEST_PATH"
+          else
+            python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python "$TEST_PATH"
+          fi
