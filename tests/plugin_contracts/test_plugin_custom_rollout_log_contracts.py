@@ -20,7 +20,9 @@ if "ray" not in sys.modules:
 
 NUM_GPUS = 0
 ENV_PREFIX = "SLIME_CONTRACT_"
-REFERENCE_CUSTOM_ROLLOUT_LOG_PATH = "plugin_contracts.test_plugin_custom_rollout_log_contracts.reference_custom_rollout_log"
+REFERENCE_CUSTOM_ROLLOUT_LOG_PATH = (
+    "plugin_contracts.test_plugin_custom_rollout_log_contracts.reference_custom_rollout_log"
+)
 
 from slime.utils.types import Sample
 

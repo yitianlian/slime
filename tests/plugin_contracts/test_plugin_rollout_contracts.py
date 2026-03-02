@@ -24,7 +24,11 @@ if "sglang_router" not in sys.modules:
 if "transformers" not in sys.modules:
     mod = types.ModuleType("transformers")
     mod.AutoTokenizer = type("AutoTokenizer", (), {"from_pretrained": staticmethod(lambda *args, **kwargs: object())})
-    mod.AutoProcessor = type("AutoProcessor", (), {"from_pretrained": staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))})
+    mod.AutoProcessor = type(
+        "AutoProcessor",
+        (),
+        {"from_pretrained": staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))},
+    )
     mod.PreTrainedTokenizerBase = type("PreTrainedTokenizerBase", (), {})
     mod.ProcessorMixin = type("ProcessorMixin", (), {})
     sys.modules["transformers"] = mod

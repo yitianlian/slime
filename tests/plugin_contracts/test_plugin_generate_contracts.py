@@ -17,13 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 NUM_GPUS = 0
 ENV_PREFIX = "SLIME_CONTRACT_"
 REFERENCE_CUSTOM_GENERATE_PATH = "plugin_contracts.test_plugin_generate_contracts.custom_generate"
-REFERENCE_CUSTOM_GENERATE_WITH_EVAL_PATH = "plugin_contracts.test_plugin_generate_contracts.custom_generate_with_evaluation"
+REFERENCE_CUSTOM_GENERATE_WITH_EVAL_PATH = (
+    "plugin_contracts.test_plugin_generate_contracts.custom_generate_with_evaluation"
+)
 
 
 def install_stubs() -> None:
     if "ray" not in sys.modules:
         ray_mod = types.ModuleType("ray")
-        ray_mod._private = types.SimpleNamespace(services=types.SimpleNamespace(get_node_ip_address=lambda: "127.0.0.1"))
+        ray_mod._private = types.SimpleNamespace(
+            services=types.SimpleNamespace(get_node_ip_address=lambda: "127.0.0.1")
+        )
         sys.modules["ray"] = ray_mod
     if "sglang_router" not in sys.modules:
         mod = types.ModuleType("sglang_router")
@@ -31,8 +35,14 @@ def install_stubs() -> None:
         sys.modules["sglang_router"] = mod
     if "transformers" not in sys.modules:
         mod = types.ModuleType("transformers")
-        mod.AutoTokenizer = type("AutoTokenizer", (), {"from_pretrained": staticmethod(lambda *args, **kwargs: object())})
-        mod.AutoProcessor = type("AutoProcessor", (), {"from_pretrained": staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))})
+        mod.AutoTokenizer = type(
+            "AutoTokenizer", (), {"from_pretrained": staticmethod(lambda *args, **kwargs: object())}
+        )
+        mod.AutoProcessor = type(
+            "AutoProcessor",
+            (),
+            {"from_pretrained": staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))},
+        )
         mod.PreTrainedTokenizerBase = type("PreTrainedTokenizerBase", (), {})
         mod.ProcessorMixin = type("ProcessorMixin", (), {})
         sys.modules["transformers"] = mod

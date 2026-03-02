@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 NUM_GPUS = 0
 ENV_PREFIX = "SLIME_CONTRACT_"
-REFERENCE_ROLLOUT_ALL_SAMPLES_PROCESS_PATH = "plugin_contracts.test_plugin_rollout_all_samples_process_contracts.reference_rollout_all_samples_process"
+REFERENCE_ROLLOUT_ALL_SAMPLES_PROCESS_PATH = (
+    "plugin_contracts.test_plugin_rollout_all_samples_process_contracts.reference_rollout_all_samples_process"
+)
 
 from slime.utils.misc import load_function
 from slime.utils.types import Sample

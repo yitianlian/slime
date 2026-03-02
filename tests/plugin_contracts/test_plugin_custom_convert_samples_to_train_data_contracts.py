@@ -74,7 +74,15 @@ def assert_runtime_callsite_is_stable() -> None:
 def assert_custom_convert_output_matches_expected(fn) -> None:
     samples = [make_sample(0, 0.5), make_sample(1, 1.5)]
     train_data = fn(type("Args", (), {})(), samples)
-    required_keys = {"tokens", "response_lengths", "rewards", "raw_reward", "truncated", "sample_indices", "loss_masks"}
+    required_keys = {
+        "tokens",
+        "response_lengths",
+        "rewards",
+        "raw_reward",
+        "truncated",
+        "sample_indices",
+        "loss_masks",
+    }
     assert isinstance(train_data, dict)
     assert required_keys <= set(train_data)
     assert all(len(train_data[key]) == len(samples) for key in required_keys)

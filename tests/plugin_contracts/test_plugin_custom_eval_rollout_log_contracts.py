@@ -20,7 +20,9 @@ if "ray" not in sys.modules:
 
 NUM_GPUS = 0
 ENV_PREFIX = "SLIME_CONTRACT_"
-REFERENCE_CUSTOM_EVAL_ROLLOUT_LOG_PATH = "plugin_contracts.test_plugin_custom_eval_rollout_log_contracts.reference_custom_eval_rollout_log"
+REFERENCE_CUSTOM_EVAL_ROLLOUT_LOG_PATH = (
+    "plugin_contracts.test_plugin_custom_eval_rollout_log_contracts.reference_custom_eval_rollout_log"
+)
 
 from slime.utils.types import Sample
 
@@ -38,7 +40,9 @@ def run_contract_test_file() -> None:
     parser.add_argument("--custom-eval-rollout-log-function-path", default=None)
     args, remaining = parser.parse_known_args()
     if args.custom_eval_rollout_log_function_path:
-        os.environ[contract_env_name("CUSTOM_EVAL_ROLLOUT_LOG_FUNCTION_PATH")] = args.custom_eval_rollout_log_function_path
+        os.environ[contract_env_name("CUSTOM_EVAL_ROLLOUT_LOG_FUNCTION_PATH")] = (
+            args.custom_eval_rollout_log_function_path
+        )
     raise SystemExit(pytest.main([__file__, *remaining]))
 
 

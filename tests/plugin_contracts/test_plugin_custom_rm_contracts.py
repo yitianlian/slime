@@ -96,7 +96,9 @@ async def test_custom_rm_default_batched_branch_is_stable():
 async def test_custom_rm_path_aligns_with_single_sample_format():
     rm_fn = importlib.import_module("plugin_contracts.test_plugin_custom_rm_contracts").reference_single_rm
     assert_single_rm_signature_matches_expected(rm_fn)
-    reward = await async_rm(make_args(custom_rm_path=get_contract_path("CUSTOM_RM_PATH", REFERENCE_SINGLE_RM_PATH)), make_sample(3))
+    reward = await async_rm(
+        make_args(custom_rm_path=get_contract_path("CUSTOM_RM_PATH", REFERENCE_SINGLE_RM_PATH)), make_sample(3)
+    )
     assert isinstance(reward, (int, float))
 
 

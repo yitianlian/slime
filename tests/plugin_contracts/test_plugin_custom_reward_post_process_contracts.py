@@ -19,7 +19,9 @@ if "ray" not in sys.modules:
 
 NUM_GPUS = 0
 ENV_PREFIX = "SLIME_CONTRACT_"
-REFERENCE_CUSTOM_REWARD_POST_PROCESS_PATH = "plugin_contracts.test_plugin_custom_reward_post_process_contracts.reference_reward_post_process"
+REFERENCE_CUSTOM_REWARD_POST_PROCESS_PATH = (
+    "plugin_contracts.test_plugin_custom_reward_post_process_contracts.reference_reward_post_process"
+)
 
 from slime.utils.types import Sample
 
@@ -72,9 +74,7 @@ def test_custom_reward_post_process_callsite_is_stable():
 def test_custom_reward_post_process_path_aligns_with_expected_format():
     from slime.utils.misc import load_function
 
-    fn = load_function(
-        get_contract_path("CUSTOM_REWARD_POST_PROCESS_PATH", REFERENCE_CUSTOM_REWARD_POST_PROCESS_PATH)
-    )
+    fn = load_function(get_contract_path("CUSTOM_REWARD_POST_PROCESS_PATH", REFERENCE_CUSTOM_REWARD_POST_PROCESS_PATH))
     assert_custom_reward_post_process_output_matches_expected(fn)
 
 

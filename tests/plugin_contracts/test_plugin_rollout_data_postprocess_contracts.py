@@ -20,7 +20,9 @@ if "ray" not in sys.modules:
 
 NUM_GPUS = 0
 ENV_PREFIX = "SLIME_CONTRACT_"
-REFERENCE_ROLLOUT_DATA_POSTPROCESS_PATH = "plugin_contracts.test_plugin_rollout_data_postprocess_contracts.reference_rollout_data_postprocess"
+REFERENCE_ROLLOUT_DATA_POSTPROCESS_PATH = (
+    "plugin_contracts.test_plugin_rollout_data_postprocess_contracts.reference_rollout_data_postprocess"
+)
 
 
 def contract_env_name(key: str) -> str:
