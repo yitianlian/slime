@@ -109,6 +109,22 @@ def append_sampling_mask_to_sample(
         use_topk_mask=getattr(args, "use_topk_mask", False),
         top_k=args.rollout_top_k,
     )
+    # Ensure sampled tokens are included in the candidate set and logprob sum.
+    # When rollout_top_logprobs_num is too small, the sampled token may be
+    # missing from top_logprobs, which would cause the old-policy and new-policy
+    # normalization domains to diverge (the training side always keeps the
+    # sampled token via the `tokens` safety net in mask_logits_for_token_ids).
+    output_token_logprobs = meta_info.get("output_token_logprobs")
+    if output_token_logprobs is not None:
+        for t, (token_logprob, token_id, *_) in enumerate(output_token_logprobs):
+            if t < len(new_sampling_mask_ids) and token_id not in new_sampling_mask_ids[t]:
+                new_sampling_mask_ids[t].append(token_id)
+                old_lse = new_sampling_mask_lse[t]
+                max_val = max(old_lse, token_logprob)
+                new_sampling_mask_lse[t] = max_val + math.log(
+                    math.exp(old_lse - max_val) + math.exp(token_logprob - max_val)
+                )
+
     if sample.sampling_token_ids is None:
         sample.sampling_token_ids = []
     if sample.sampling_logprob_sum is None:

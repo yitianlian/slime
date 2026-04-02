@@ -153,7 +153,6 @@ def mask_logits_for_token_ids(
     sampling_token_ids: list[list[int]],
     vocab_shard_size: int,
     tp_rank: int,
-    tokens: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Mask logits to keep only the sampling token subset, setting others to -inf.
 
@@ -170,10 +169,6 @@ def mask_logits_for_token_ids(
         sampling_token_ids: Per-position list of *global* token IDs to keep.
         vocab_shard_size: Size of the local vocabulary shard on this TP rank.
         tp_rank: Tensor-parallel rank (to map global IDs to local indices).
-        tokens: Optional ``[seq_len]`` tensor of generated token IDs.  When
-            provided, the generated token at each position is always kept in
-            the mask as a safety net (it must be in the sampling set, but may
-            be missing if ``rollout_top_logprobs_num`` was too small).
 
     Returns:
         A **new** tensor with non-selected entries replaced by ``-inf``.
@@ -185,12 +180,6 @@ def mask_logits_for_token_ids(
         if local_ids:
             idx = torch.tensor(local_ids, dtype=torch.long, device=logits.device)
             mask[t].scatter_(0, idx, True)
-    # Ensure the actually generated tokens are always kept in the mask.
-    if tokens is not None:
-        local_tokens = tokens.long() - vocab_start
-        valid = (local_tokens >= 0) & (local_tokens < vocab_shard_size)
-        positions = torch.arange(min(tokens.size(0), mask.size(0)), device=tokens.device)
-        mask[positions[valid], local_tokens[valid]] = True
     return torch.where(mask, logits, torch.tensor(float("-inf"), device=logits.device, dtype=logits.dtype))
 
 

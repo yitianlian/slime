@@ -253,8 +253,10 @@ class MegatronTrainRayActor(TrainRayActor):
                     )
                 )
             ]
-        # sampling_token_ids: variable-length nested lists, apply CP slicing but keep as lists
-        if "sampling_token_ids" in rollout_data:
+        # sampling_token_ids: variable-length nested lists, apply zigzag CP slicing but keep as lists.
+        # For allgather_cp, skip zigzag slicing — contiguous slicing is done at training time
+        # inside get_masked_log_probs_for_token_ids to match the allgather logits layout.
+        if "sampling_token_ids" in rollout_data and not self.args.allgather_cp:
             key = "sampling_token_ids"
             rollout_data[key] = [
                 slice_log_prob_with_cp(

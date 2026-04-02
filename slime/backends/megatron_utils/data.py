@@ -457,6 +457,10 @@ def log_rollout_data(
                         if num_positions > 0
                         else 0.0
                     )
+                elif key == "sampling_logprob_sum":
+                    # Per-token tensor; skip generic aggregation — already
+                    # summarized indirectly via sampling_token_ids metrics.
+                    continue
                 elif isinstance(val[0], (list, tuple)):
                     continue
                 else:
