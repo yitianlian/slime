@@ -14,12 +14,14 @@ from slime.utils.ppo_utils import (
     calculate_log_probs_and_entropy,
     compute_approx_kl,
     compute_gspo_kl,
+    compute_log_probs,
     compute_opsm_mask,
     compute_policy_loss,
     get_advantages_and_returns_batch,
     get_grpo_returns,
     get_reinforce_plus_plus_baseline_advantages,
     get_reinforce_plus_plus_returns,
+    mask_logits_for_token_ids,
 )
 from slime.utils.types import RolloutBatch
 
@@ -295,6 +297,107 @@ def get_log_probs_and_entropy(
         )
 
     return torch.empty((0,), device=logits.device), res
+
+
+def get_masked_log_probs_for_token_ids(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    sampling_token_ids: list[list[list[int]]],
+    max_seq_lens: list[int] | None = None,
+) -> list[torch.Tensor]:
+    """Compute per-token log-probabilities restricted to sampling token subsets.
+
+    For each sample, masks logits to keep only the tokens in ``sampling_token_ids``
+    (setting others to ``-inf``), then computes ``log softmax`` over the
+    restricted set.
+
+    Args:
+        logits: Policy logits with shape ``[1, T, V]``.
+        args: Configuration (temperature applied in ``get_responses``).
+        unconcat_tokens: Per-sample token tensors.
+        total_lengths: Total sequence lengths per sample.
+        response_lengths: Response segment lengths per sample.
+        sampling_token_ids: Per-sample, per-position list of global token IDs to
+            keep. Shape: ``[num_samples][response_length_or_cp_chunk][variable]``.
+        max_seq_lens: Optional max sequence lengths per sample (for bshd).
+
+    Returns:
+        List of ``[R]`` tensors — masked log-probabilities per sample.
+    """
+    tp_rank = mpu.get_tensor_model_parallel_rank()
+    tp_group = mpu.get_tensor_model_parallel_group()
+
+    masked_log_probs_list = []
+    for i, (logits_chunk, tokens_chunk) in enumerate(
+        get_responses(
+            logits,
+            args=args,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
+    ):
+        vocab_shard_size = logits_chunk.size(-1)
+        masked_logits = mask_logits_for_token_ids(
+            logits_chunk, sampling_token_ids[i], vocab_shard_size, tp_rank, tokens=tokens_chunk
+        )
+        # Clone before compute_log_probs: fused_vocab_parallel_cross_entropy
+        # modifies its input in-place (subtract max, exp, div), which would
+        # corrupt the autograd graph of masked_logits.
+        masked_lp = compute_log_probs(masked_logits.clone(), tokens_chunk, tp_group)
+        masked_log_probs_list.append(masked_lp.squeeze(-1))
+
+    if args.allgather_cp:
+        res = {"log_probs": masked_log_probs_list}
+        _allgather_cp_redistribute(
+            res,
+            logits=logits,
+            args=args,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
+        masked_log_probs_list = res["log_probs"]
+
+    return masked_log_probs_list
+
+
+def apply_sampling_mask_to_log_probs(
+    args: Namespace,
+    batch: RolloutBatch,
+    logits: torch.Tensor,
+    log_probs: list[torch.Tensor],
+    old_log_probs: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Apply rollout sampling-mask normalization to train-time log-probabilities."""
+    sampling_token_ids = batch.get("sampling_token_ids")
+    mask_logprob_sum = batch.get("sampling_logprob_sum")
+    if (
+        (not getattr(args, "use_topp_mask", False) and not getattr(args, "use_topk_mask", False))
+        or sampling_token_ids is None
+    ):
+        return log_probs, old_log_probs
+
+    masked_log_probs = get_masked_log_probs_for_token_ids(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        sampling_token_ids=sampling_token_ids,
+        max_seq_lens=max_seq_lens,
+    )
+
+    masked_old_log_probs = [olp - tlse for olp, tlse in zip(old_log_probs, mask_logprob_sum)]
+    return masked_log_probs, masked_old_log_probs
 
 
 def get_values(
@@ -658,6 +761,17 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+
+    log_probs, old_log_probs = apply_sampling_mask_to_log_probs(
+        args,
+        batch,
+        logits,
+        log_probs,
+        old_log_probs,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+    )
 
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
     need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"

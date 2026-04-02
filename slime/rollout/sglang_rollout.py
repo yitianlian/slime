@@ -7,6 +7,7 @@ from argparse import Namespace
 from collections.abc import Callable
 from typing import Any
 
+import math
 import numpy as np
 import pybase64
 import sglang_router
@@ -34,6 +35,89 @@ from .rm_hub import async_rm, batched_async_rm
 __all__ = ["generate_rollout", "get_model_url"]
 
 logger = logging.getLogger(__name__)
+
+
+def _select_sampling_mask_candidates(
+    pos_top_logprobs: list[list],
+    *,
+    use_topp_mask: bool,
+    top_p: float,
+    use_topk_mask: bool,
+    top_k: int,
+) -> list[list]:
+    sorted_top_logprobs = sorted(pos_top_logprobs, key=lambda x: x[0], reverse=True)
+    selected = []
+    cumulative_prob = 0.0
+    for item in sorted_top_logprobs:
+        if use_topk_mask and len(selected) >= top_k:
+            break
+        selected.append(item)
+        cumulative_prob += math.exp(item[0])
+        if use_topp_mask and cumulative_prob >= top_p:
+            break
+    return selected
+
+
+def extract_sampling_mask_candidates(
+    top_logprobs_per_position: list[list[list]],
+    *,
+    use_topp_mask: bool,
+    top_p: float,
+    use_topk_mask: bool,
+    top_k: int,
+) -> tuple[list[list[int]], list[float]]:
+    all_token_ids: list[list[int]] = []
+    all_logprob_sums: list[float] = []
+
+    for pos_top_logprobs in top_logprobs_per_position:
+        selected = _select_sampling_mask_candidates(
+            pos_top_logprobs,
+            use_topp_mask=use_topp_mask,
+            top_p=top_p,
+            use_topk_mask=use_topk_mask,
+            top_k=top_k,
+        )
+        selected_ids = [token_id for _, token_id, *_ in selected]
+        selected_logprobs = [logprob for logprob, *_ in selected]
+        if selected_logprobs:
+            max_logprob = max(selected_logprobs)
+            logprob_sum = max_logprob + math.log(
+                sum(math.exp(logprob - max_logprob) for logprob in selected_logprobs)
+            )
+        else:
+            logprob_sum = 0.0
+
+        all_token_ids.append(selected_ids)
+        all_logprob_sums.append(logprob_sum)
+
+    return all_token_ids, all_logprob_sums
+
+
+def append_sampling_mask_to_sample(
+    sample: Sample,
+    *,
+    meta_info: dict[str, Any],
+    args: Namespace,
+) -> None:
+    if (
+        (not getattr(args, "use_topp_mask", False) and not getattr(args, "use_topk_mask", False))
+        or "output_top_logprobs" not in meta_info
+    ):
+        return
+
+    new_sampling_mask_ids, new_sampling_mask_lse = extract_sampling_mask_candidates(
+        meta_info["output_top_logprobs"],
+        use_topp_mask=getattr(args, "use_topp_mask", False),
+        top_p=args.rollout_top_p,
+        use_topk_mask=getattr(args, "use_topk_mask", False),
+        top_k=args.rollout_top_k,
+    )
+    if sample.sampling_token_ids is None:
+        sample.sampling_token_ids = []
+    if sample.sampling_logprob_sum is None:
+        sample.sampling_logprob_sum = []
+    sample.sampling_token_ids += new_sampling_mask_ids
+    sample.sampling_logprob_sum += new_sampling_mask_lse
 
 
 def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate") -> str:
@@ -146,6 +230,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "return_logprob": True,
     }
 
+    if getattr(args, "use_topp_mask", False) or getattr(args, "use_topk_mask", False):
+        payload["top_logprobs_num"] = (
+            max(args.rollout_top_logprobs_num, args.rollout_top_k)
+            if getattr(args, "use_topk_mask", False)
+            else args.rollout_top_logprobs_num
+        )
+
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
 
@@ -198,6 +289,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if sample.rollout_log_probs is None:
         sample.rollout_log_probs = []
     sample.rollout_log_probs += new_response_log_probs
+
+    # Record the exact rollout candidate set so training can reuse the same normalization domain.
+    append_sampling_mask_to_sample(sample, meta_info=output["meta_info"], args=args)
 
     if "routed_experts" in output["meta_info"]:
         sample.rollout_routed_experts = np.frombuffer(
