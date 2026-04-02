@@ -2,12 +2,12 @@ import asyncio
 import copy
 import inspect
 import logging
+import math
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from typing import Any
 
-import math
 import numpy as np
 import pybase64
 import sglang_router
@@ -81,9 +81,7 @@ def extract_sampling_mask_candidates(
         selected_logprobs = [logprob for logprob, *_ in selected]
         if selected_logprobs:
             max_logprob = max(selected_logprobs)
-            logprob_sum = max_logprob + math.log(
-                sum(math.exp(logprob - max_logprob) for logprob in selected_logprobs)
-            )
+            logprob_sum = max_logprob + math.log(sum(math.exp(logprob - max_logprob) for logprob in selected_logprobs))
         else:
             logprob_sum = 0.0
 
@@ -100,9 +98,8 @@ def append_sampling_mask_to_sample(
     args: Namespace,
 ) -> None:
     if (
-        (not getattr(args, "use_topp_mask", False) and not getattr(args, "use_topk_mask", False))
-        or "output_top_logprobs" not in meta_info
-    ):
+        not getattr(args, "use_topp_mask", False) and not getattr(args, "use_topk_mask", False)
+    ) or "output_top_logprobs" not in meta_info:
         return
 
     new_sampling_mask_ids, new_sampling_mask_lse = extract_sampling_mask_candidates(

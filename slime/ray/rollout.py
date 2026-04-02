@@ -1200,6 +1200,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     log_dict["rollout/step"] = step
     logging_utils.log(args, log_dict, step_key="rollout/step")
 
+
 def compute_metrics_from_samples(args, samples):
     response_lengths = [sample.effective_response_length for sample in samples]
 

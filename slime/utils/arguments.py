@@ -1529,13 +1529,11 @@ def _validate_sampling_mask_args(args):
 
     if args.use_topp_mask:
         assert args.rollout_top_p < 1.0, (
-            "--use-topp-mask requires rollout_top_p < 1.0. "
-            f"Current value: rollout_top_p={args.rollout_top_p}"
+            "--use-topp-mask requires rollout_top_p < 1.0. " f"Current value: rollout_top_p={args.rollout_top_p}"
         )
     if getattr(args, "use_topk_mask", False):
         assert args.rollout_top_k > 0, (
-            "--use-topk-mask requires rollout_top_k > 0. "
-            f"Current value: rollout_top_k={args.rollout_top_k}"
+            "--use-topk-mask requires rollout_top_k > 0. " f"Current value: rollout_top_k={args.rollout_top_k}"
         )
     assert args.rollout_top_logprobs_num > 0, (
         "--use-topp-mask/--use-topk-mask requires --rollout-top-logprobs-num > 0. "

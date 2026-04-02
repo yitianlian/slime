@@ -381,9 +381,8 @@ def apply_sampling_mask_to_log_probs(
     sampling_token_ids = batch.get("sampling_token_ids")
     mask_logprob_sum = batch.get("sampling_logprob_sum")
     if (
-        (not getattr(args, "use_topp_mask", False) and not getattr(args, "use_topk_mask", False))
-        or sampling_token_ids is None
-    ):
+        not getattr(args, "use_topp_mask", False) and not getattr(args, "use_topk_mask", False)
+    ) or sampling_token_ids is None:
         return log_probs, old_log_probs
 
     masked_log_probs = get_masked_log_probs_for_token_ids(
