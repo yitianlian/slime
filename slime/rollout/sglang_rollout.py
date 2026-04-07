@@ -91,29 +91,110 @@ def extract_sampling_mask_candidates(
     return all_token_ids, all_logprob_sums
 
 
+def _decode_base64_top_p_logprobs(meta_info: dict[str, Any]) -> tuple[list[list[float]], list[list[int]]] | None:
+    """Decode base64-encoded variable-length top-p logprobs from sglang response.
+
+    Returns (vals_per_position, idxs_per_position) or None if not present.
+    """
+    val_b64 = meta_info.get("output_top_p_logprobs_val_base64")
+    idx_b64 = meta_info.get("output_top_p_logprobs_idx_base64")
+    lengths = meta_info.get("output_top_p_logprobs_lengths")
+    if val_b64 is None or idx_b64 is None or lengths is None:
+        return None
+    flat_vals = np.frombuffer(pybase64.b64decode(val_b64.encode("ascii")), dtype=np.float32)
+    flat_idxs = np.frombuffer(pybase64.b64decode(idx_b64.encode("ascii")), dtype=np.int32)
+
+    vals_per_pos: list[list[float]] = []
+    idxs_per_pos: list[list[int]] = []
+    offset = 0
+    for length in lengths:
+        if length < 0:
+            vals_per_pos.append([])
+            idxs_per_pos.append([])
+        else:
+            vals_per_pos.append(flat_vals[offset : offset + length].tolist())
+            idxs_per_pos.append(flat_idxs[offset : offset + length].tolist())
+            offset += length
+    return vals_per_pos, idxs_per_pos
+
+
+def _extract_native_top_p_candidates(
+    meta_info: dict[str, Any],
+) -> tuple[list[list[int]], list[float]] | None:
+    """Extract sampling mask candidates from native sglang top-p logprobs.
+
+    Handles both base64-encoded and list-based top-p logprobs responses.
+    Returns (token_ids_per_position, logprob_sums_per_position) or None.
+    """
+    # Try base64-encoded format first (more efficient)
+    decoded = _decode_base64_top_p_logprobs(meta_info)
+    if decoded is not None:
+        vals_per_pos, idxs_per_pos = decoded
+        all_token_ids: list[list[int]] = []
+        all_logprob_sums: list[float] = []
+        for vals, idxs in zip(vals_per_pos, idxs_per_pos):
+            all_token_ids.append(idxs)
+            if vals:
+                max_val = max(vals)
+                logprob_sum = max_val + math.log(sum(math.exp(v - max_val) for v in vals))
+            else:
+                logprob_sum = 0.0
+            all_logprob_sums.append(logprob_sum)
+        return all_token_ids, all_logprob_sums
+
+    # Fall back to list-based format: output_top_p_logprobs is list of list of (logprob, token_id, text)
+    top_p_logprobs = meta_info.get("output_top_p_logprobs")
+    if top_p_logprobs is not None:
+        all_token_ids = []
+        all_logprob_sums = []
+        for pos_entries in top_p_logprobs:
+            ids = [token_id for _, token_id, *_ in pos_entries]
+            logprobs = [logprob for logprob, *_ in pos_entries]
+            all_token_ids.append(ids)
+            if logprobs:
+                max_lp = max(logprobs)
+                logprob_sum = max_lp + math.log(sum(math.exp(lp - max_lp) for lp in logprobs))
+            else:
+                logprob_sum = 0.0
+            all_logprob_sums.append(logprob_sum)
+        return all_token_ids, all_logprob_sums
+
+    return None
+
+
 def append_sampling_mask_to_sample(
     sample: Sample,
     *,
     meta_info: dict[str, Any],
     args: Namespace,
 ) -> None:
-    if (
-        not getattr(args, "use_topp_mask", False) and not getattr(args, "use_topk_mask", False)
-    ) or "output_top_logprobs" not in meta_info:
+    use_topp = getattr(args, "use_topp_mask", False)
+    use_topk = getattr(args, "use_topk_mask", False)
+    if not use_topp and not use_topk:
         return
 
-    new_sampling_mask_ids, new_sampling_mask_lse = extract_sampling_mask_candidates(
-        meta_info["output_top_logprobs"],
-        use_topp_mask=getattr(args, "use_topp_mask", False),
-        top_p=args.rollout_top_p,
-        use_topk_mask=getattr(args, "use_topk_mask", False),
-        top_k=args.rollout_top_k,
-    )
+    # Try native sglang top-p logprobs first (no client-side filtering needed for top-p)
+    native_result = _extract_native_top_p_candidates(meta_info) if use_topp and not use_topk else None
+
+    if native_result is not None:
+        new_sampling_mask_ids, new_sampling_mask_lse = native_result
+    elif "output_top_logprobs" in meta_info:
+        # Fallback: client-side filtering from top-K logprobs
+        new_sampling_mask_ids, new_sampling_mask_lse = extract_sampling_mask_candidates(
+            meta_info["output_top_logprobs"],
+            use_topp_mask=use_topp,
+            top_p=args.rollout_top_p,
+            use_topk_mask=use_topk,
+            top_k=args.rollout_top_k,
+        )
+    else:
+        return
+
     # Ensure sampled tokens are included in the candidate set and logprob sum.
-    # When rollout_top_logprobs_num is too small, the sampled token may be
-    # missing from top_logprobs, which would cause the old-policy and new-policy
-    # normalization domains to diverge (the training side always keeps the
-    # sampled token via the `tokens` safety net in mask_logits_for_token_ids).
+    # The sampled token may be missing from the candidate set if the model is
+    # very uncertain, which would cause old-policy and new-policy normalization
+    # domains to diverge (the training side always keeps the sampled token via
+    # the `tokens` safety net in mask_logits_for_token_ids).
     output_token_logprobs = meta_info.get("output_token_logprobs")
     if output_token_logprobs is not None:
         for t, (token_logprob, token_id, *_) in enumerate(output_token_logprobs):
@@ -244,11 +325,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     }
 
     if getattr(args, "use_topp_mask", False) or getattr(args, "use_topk_mask", False):
-        payload["top_logprobs_num"] = (
-            max(args.rollout_top_logprobs_num, args.rollout_top_k)
-            if getattr(args, "use_topk_mask", False)
-            else args.rollout_top_logprobs_num
-        )
+        if getattr(args, "use_topk_mask", False):
+            # top-k mask: request top-K logprobs for client-side filtering
+            payload["top_logprobs_num"] = max(args.rollout_top_logprobs_num, args.rollout_top_k)
+        if getattr(args, "use_topp_mask", False):
+            # Use native sglang top-p logprobs with base64 encoding for efficiency
+            payload["top_logprobs_p"] = args.rollout_top_p
+            payload["return_logprobs_in_base64"] = True
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True

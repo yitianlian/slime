@@ -284,7 +284,8 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=256,
                 help=(
                     "Number of top logprobs to request from sglang per position. "
-                    "Used with --use-topp-mask/--use-topk-mask to recover the rollout sampling support."
+                    "Used with --use-topk-mask to recover the rollout sampling support. "
+                    "Not required for --use-topp-mask (which uses native sglang top-p logprobs)."
                 ),
             )
             parser.add_argument(
@@ -1535,10 +1536,10 @@ def _validate_sampling_mask_args(args):
         assert args.rollout_top_k > 0, (
             "--use-topk-mask requires rollout_top_k > 0. " f"Current value: rollout_top_k={args.rollout_top_k}"
         )
-    assert args.rollout_top_logprobs_num > 0, (
-        "--use-topp-mask/--use-topk-mask requires --rollout-top-logprobs-num > 0. "
-        f"Current value: {args.rollout_top_logprobs_num}"
-    )
+        assert args.rollout_top_logprobs_num > 0, (
+            "--use-topk-mask requires --rollout-top-logprobs-num > 0. "
+            f"Current value: {args.rollout_top_logprobs_num}"
+        )
 
 
 def slime_validate_args(args):

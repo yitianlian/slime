@@ -1275,10 +1275,122 @@ index 5bf5aa0c8..e52f39fd8 100644
      @classmethod
      def set_metadata(cls, hidden_size: int, dtype: torch.dtype, device: torch.device):
 diff --git a/python/sglang/srt/layers/logits_processor.py b/python/sglang/srt/layers/logits_processor.py
-index aff05bf42..130359232 100644
+index aff05bf42..68b67c726 100644
 --- a/python/sglang/srt/layers/logits_processor.py
 +++ b/python/sglang/srt/layers/logits_processor.py
-@@ -872,11 +872,6 @@ class LogitsProcessor(nn.Module):
+@@ -47,6 +47,7 @@ from sglang.srt.layers.utils.logprob import (
+     get_token_ids_logprobs_prefill,
+     get_top_logprobs_chunk,
+     get_top_logprobs_prefill,
++    get_top_p_logprobs_prefill,
+ )
+ from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
+ from sglang.srt.model_executor.forward_batch_info import (
+@@ -78,6 +79,9 @@ class LogitsProcessorOutput:
+     # The logprobs and ids of the top-k tokens in output positions. shape: [#seq, k]
+     next_token_top_logprobs_val: Optional[List] = None
+     next_token_top_logprobs_idx: Optional[List] = None
++    # The logprobs and ids of the top-p tokens in output positions (variable-length per position)
++    next_token_top_p_logprobs_val: Optional[List] = None
++    next_token_top_p_logprobs_idx: Optional[List] = None
+     # The logprobs and ids of the requested token ids in output positions. shape: [#seq, n] (n is the number of requested token ids)
+     # Can contain either lists or GPU tensors (for delayed copy optimization in prefill-only requests)
+     next_token_token_ids_logprobs_val: Optional[
+@@ -91,6 +95,9 @@ class LogitsProcessorOutput:
+     # The logprobs and ids of the top-k tokens in input positions.  shape: [#seq, #token, k]
+     input_top_logprobs_val: Optional[List] = None
+     input_top_logprobs_idx: Optional[List] = None
++    # The logprobs and ids of the top-p tokens in input positions (variable-length per position)
++    input_top_p_logprobs_val: Optional[List] = None
++    input_top_p_logprobs_idx: Optional[List] = None
+     # The logprobs and ids of the requested token ids in input positions. shape: [#seq, n] (n is the number of requested token ids)
+     # Can contain either lists or GPU tensors (for delayed GPU-to-CPU transfer optimization)
+     input_token_ids_logprobs_val: Optional[List[Union[List[float], torch.Tensor]]] = (
+@@ -115,12 +122,14 @@ class LogitsMetadata:
+ 
+     extend_return_logprob: bool = False
+     extend_return_top_logprob: bool = False
++    extend_return_top_p_logprob: bool = False
+     extend_token_ids_logprob: bool = False
+     extend_seq_lens: Optional[torch.Tensor] = None
+     extend_seq_lens_cpu: Optional[List[int]] = None
+     extend_logprob_start_lens_cpu: Optional[List[int]] = None
+     extend_logprob_pruned_lens_cpu: Optional[List[int]] = None
+     top_logprobs_nums: Optional[List[int]] = None
++    top_logprobs_ps: Optional[List[float]] = None
+     extend_input_logprob_token_ids_gpu: Optional[torch.Tensor] = None
+     token_ids_logprobs: Optional[List[List[int]]] = None
+ 
+@@ -160,6 +169,10 @@ class LogitsMetadata:
+             extend_return_top_logprob = any(
+                 x > 0 for x in forward_batch.top_logprobs_nums
+             )
++            extend_return_top_p_logprob = (
++                forward_batch.top_logprobs_ps is not None
++                and any(x > 0.0 for x in forward_batch.top_logprobs_ps)
++            )
+             extend_token_ids_logprob = any(
+                 x is not None for x in forward_batch.token_ids_logprobs
+             )
+@@ -174,6 +187,8 @@ class LogitsMetadata:
+                 extend_logprob_pruned_lens_cpu.append(extend_len - start_len)
+         else:
+             extend_return_logprob = extend_return_top_logprob = (
++                extend_return_top_p_logprob
++            ) = (
+                 extend_token_ids_logprob
+             ) = extend_logprob_pruned_lens_cpu = False
+ 
+@@ -183,12 +198,14 @@ class LogitsMetadata:
+             next_token_logits_buffer=forward_batch.next_token_logits_buffer,
+             extend_return_logprob=extend_return_logprob,
+             extend_return_top_logprob=extend_return_top_logprob,
++            extend_return_top_p_logprob=extend_return_top_p_logprob,
+             extend_token_ids_logprob=extend_token_ids_logprob,
+             extend_seq_lens=forward_batch.extend_seq_lens,
+             extend_seq_lens_cpu=forward_batch.extend_seq_lens_cpu,
+             extend_logprob_start_lens_cpu=forward_batch.extend_logprob_start_lens_cpu,
+             extend_logprob_pruned_lens_cpu=extend_logprob_pruned_lens_cpu,
+             top_logprobs_nums=forward_batch.top_logprobs_nums,
++            top_logprobs_ps=forward_batch.top_logprobs_ps,
+             token_ids_logprobs=forward_batch.token_ids_logprobs,
+             extend_input_logprob_token_ids_gpu=forward_batch.extend_input_logprob_token_ids_gpu,
+             padded_static_len=forward_batch.padded_static_len,
+@@ -391,6 +408,8 @@ class LogitsProcessor(nn.Module):
+             input_token_logprobs=logprobs_result.input_token_logprobs,
+             input_top_logprobs_val=logprobs_result.input_top_logprobs_val,
+             input_top_logprobs_idx=logprobs_result.input_top_logprobs_idx,
++            input_top_p_logprobs_val=logprobs_result.input_top_p_logprobs_val,
++            input_top_p_logprobs_idx=logprobs_result.input_top_p_logprobs_idx,
+             input_token_ids_logprobs_val=logprobs_result.input_token_ids_logprobs_val,
+             input_token_ids_logprobs_idx=logprobs_result.input_token_ids_logprobs_idx,
+             mm_input_embeds=logits_metadata.mm_input_embeds,
+@@ -619,6 +638,15 @@ class LogitsProcessor(nn.Module):
+         else:
+             input_top_logprobs_val = input_top_logprobs_idx = None
+ 
++        # Get the logprob of top-p tokens
++        if logits_metadata.extend_return_top_p_logprob:
++            (
++                input_top_p_logprobs_val,
++                input_top_p_logprobs_idx,
++            ) = get_top_p_logprobs_prefill(input_logprobs, logits_metadata)
++        else:
++            input_top_p_logprobs_val = input_top_p_logprobs_idx = None
++
+         # Get the logprob of given token id
+         if logits_metadata.extend_token_ids_logprob:
+             (
+@@ -637,6 +665,8 @@ class LogitsProcessor(nn.Module):
+             input_token_logprobs=input_token_logprobs,
+             input_top_logprobs_val=input_top_logprobs_val,
+             input_top_logprobs_idx=input_top_logprobs_idx,
++            input_top_p_logprobs_val=input_top_p_logprobs_val,
++            input_top_p_logprobs_idx=input_top_p_logprobs_idx,
+             input_token_ids_logprobs_val=input_token_ids_logprobs_val,
+             input_token_ids_logprobs_idx=input_token_ids_logprobs_idx,
+         )
+@@ -872,11 +902,6 @@ class LogitsProcessor(nn.Module):
                      None,  # bias
                      True,  # is_vnni
                  )
@@ -1290,158 +1402,15 @@ index aff05bf42..130359232 100644
              else:
                  logits = torch.matmul(
                      hidden_states.to(lm_head.weight.dtype), lm_head.weight.T
-diff --git a/python/sglang/srt/layers/moe/ep_moe/deepep_bf16_kernels.py b/python/sglang/srt/layers/moe/ep_moe/deepep_bf16_kernels.py
-new file mode 100644
-index 000000000..8d3d0f92e
---- /dev/null
-+++ b/python/sglang/srt/layers/moe/ep_moe/deepep_bf16_kernels.py
-@@ -0,0 +1,146 @@
-+"""Fused Triton kernels for DeepEP BF16 low-latency MoE decode.
-+
-+Replaces the naive activation + masking pipeline (5+ CUDA kernels for silu+mul
-+and arange+comparison+masked_fill+copy) with a single Triton elementwise kernel,
-+while keeping cuBLAS batched GEMM for the matrix multiplies.
-+
-+Pipeline: bmm → fused_act_mul_masked (in-place) → bmm(out=hidden)
-+  (3 ops total: 2 cuBLAS + 1 Triton, vs original 7-8 separate CUDA kernels)
-+"""
-+
-+import torch
-+import triton
-+import triton.language as tl
-+
-+
-+@triton.jit
-+def _silu_mul_masked_kernel(
-+    gate_up_ptr,
-+    masked_m_ptr,
-+    M,
-+    N,
-+    stride_ge,
-+    stride_gm,
-+    stride_gn,
-+    BLOCK: tl.constexpr,
-+):
-+    """Fused SiLU(gate) * up with per-expert masking, written in-place.
-+
-+    gate_up: [E, M, 2*N] — first N cols are gate, last N cols are up.
-+    Writes SiLU(gate)*up to gate_up[:,:,:N] in-place.
-+    Rows m >= masked_m[e] are zeroed.
-+    """
-+    expert_id = tl.program_id(1)
-+    pid = tl.program_id(0)
-+
-+    expert_valid_m = tl.load(masked_m_ptr + expert_id)
-+
-+    offs = pid * BLOCK + tl.arange(0, BLOCK)
-+    total = M * N
-+    mask = offs < total
-+
-+    m = offs // N
-+    n = offs % N
-+
-+    gate_base = gate_up_ptr + expert_id * stride_ge
-+
-+    gate_val = tl.load(gate_base + m * stride_gm + n * stride_gn, mask=mask, other=0.0)
-+    up_val = tl.load(
-+        gate_base + m * stride_gm + (n + N) * stride_gn, mask=mask, other=0.0
-+    )
-+
-+    gate_f32 = gate_val.to(tl.float32)
-+    result = (gate_f32 * tl.sigmoid(gate_f32)) * up_val.to(tl.float32)
-+
-+    # Zero invalid rows
-+    valid = m < expert_valid_m
-+    result = tl.where(valid, result, 0.0)
-+
-+    tl.store(
-+        gate_base + m * stride_gm + n * stride_gn,
-+        result.to(gate_up_ptr.dtype.element_ty),
-+        mask=mask,
-+    )
-+
-+
-+@triton.jit
-+def _gelu_mul_masked_kernel(
-+    gate_up_ptr,
-+    masked_m_ptr,
-+    M,
-+    N,
-+    stride_ge,
-+    stride_gm,
-+    stride_gn,
-+    BLOCK: tl.constexpr,
-+):
-+    """Fused GELU(gate) * up with per-expert masking, written in-place."""
-+    expert_id = tl.program_id(1)
-+    pid = tl.program_id(0)
-+
-+    expert_valid_m = tl.load(masked_m_ptr + expert_id)
-+
-+    offs = pid * BLOCK + tl.arange(0, BLOCK)
-+    total = M * N
-+    mask = offs < total
-+
-+    m = offs // N
-+    n = offs % N
-+
-+    gate_base = gate_up_ptr + expert_id * stride_ge
-+
-+    gate_val = tl.load(gate_base + m * stride_gm + n * stride_gn, mask=mask, other=0.0)
-+    up_val = tl.load(
-+        gate_base + m * stride_gm + (n + N) * stride_gn, mask=mask, other=0.0
-+    )
-+
-+    g = gate_val.to(tl.float32)
-+    kAlpha = 0.7978845608028654
-+    gate_act = 0.5 * g * (1.0 + tl.math.tanh(kAlpha * (g + 0.044715 * g * g * g)))
-+    result = gate_act * up_val.to(tl.float32)
-+
-+    valid = m < expert_valid_m
-+    result = tl.where(valid, result, 0.0)
-+
-+    tl.store(
-+        gate_base + m * stride_gm + n * stride_gn,
-+        result.to(gate_up_ptr.dtype.element_ty),
-+        mask=mask,
-+    )
-+
-+
-+def fused_act_mul_masked_inplace(
-+    gate_up: torch.Tensor,
-+    intermediate_size: int,
-+    masked_m: torch.Tensor,
-+    use_gelu: bool = False,
-+) -> None:
-+    """Fused activation + multiply + masking, written in-place to gate_up[:,:,:I].
-+
-+    After this call, gate_up[:, :, :intermediate_size] contains the masked
-+    activated intermediate, suitable for the down projection GEMM.
-+
-+    Args:
-+        gate_up: [E, M, 2*I] output of bmm(tokens, w13.T), modified in-place
-+        intermediate_size: I
-+        masked_m: [E] per-expert valid token count
-+        use_gelu: use GELU instead of SiLU
-+    """
-+    E, M, _ = gate_up.shape
-+    N = intermediate_size
-+
-+    total = M * N
-+    BLOCK = 1024
-+    grid = (triton.cdiv(total, BLOCK), E)
-+
-+    kernel = _gelu_mul_masked_kernel if use_gelu else _silu_mul_masked_kernel
-+    kernel[grid](
-+        gate_up,
-+        masked_m,
-+        M,
-+        N,
-+        gate_up.stride(0),
-+        gate_up.stride(1),
-+        gate_up.stride(2),
-+        BLOCK=BLOCK,
-+    )
+@@ -1073,6 +1098,8 @@ class LogitsProcessor(nn.Module):
+             input_token_logprobs=input_token_logprobs,
+             input_top_logprobs_val=input_top_logprobs_val,
+             input_top_logprobs_idx=input_top_logprobs_idx,
++            input_top_p_logprobs_val=input_top_p_logprobs_val,
++            input_top_p_logprobs_idx=input_top_p_logprobs_idx,
+             input_token_ids_logprobs_val=input_token_ids_logprobs_val,
+             input_token_ids_logprobs_idx=input_token_ids_logprobs_idx,
+             # FIXME: These fields are not logits-related but are passed through here as a
 diff --git a/python/sglang/srt/layers/moe/ep_moe/layer.py b/python/sglang/srt/layers/moe/ep_moe/layer.py
 index ebcc696ec..3b527021a 100644
 --- a/python/sglang/srt/layers/moe/ep_moe/layer.py
@@ -1907,11 +1876,205 @@ index ae0614635..3b6a8d254 100644
          # TODO: remove this when npu_mrope supports QNumHeads * QHeadSize > 4096
          assert (
              fused_set_kv_buffer_arg is None
+diff --git a/python/sglang/srt/layers/sampler.py b/python/sglang/srt/layers/sampler.py
+index f78d83d79..706b0ebaa 100644
+--- a/python/sglang/srt/layers/sampler.py
++++ b/python/sglang/srt/layers/sampler.py
+@@ -12,7 +12,11 @@ from sglang.srt.layers.dp_attention import (
+ )
+ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+ from sglang.srt.layers.utils.hash import murmur_hash32
+-from sglang.srt.layers.utils.logprob import get_token_ids_logprobs, get_top_logprobs
++from sglang.srt.layers.utils.logprob import (
++    get_token_ids_logprobs,
++    get_top_logprobs,
++    get_top_p_logprobs,
++)
+ from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+ from sglang.srt.sampling.sampling_params import TOP_K_ALL
+ from sglang.srt.server_args import get_global_server_args
+@@ -79,6 +83,7 @@ class Sampler(nn.Module):
+         sampling_info: SamplingBatchInfo,
+         return_logprob: bool,
+         top_logprobs_nums: List[int],
++        top_logprobs_ps: Optional[List[float]],
+         token_ids_logprobs: List[List[int]],
+         positions: torch.Tensor,
+     ):
+@@ -176,6 +181,7 @@ class Sampler(nn.Module):
+                 logits_output,
+                 logprobs,
+                 top_logprobs_nums,
++                top_logprobs_ps,
+                 token_ids_logprobs,
+                 sampling_info,
+                 batch_next_token_ids,
+@@ -314,6 +320,7 @@ class Sampler(nn.Module):
+         logits_output: LogitsProcessorOutput,
+         logprobs: torch.Tensor,
+         top_logprobs_nums: List[int],
++        top_logprobs_ps: Optional[List[float]],
+         token_ids_logprobs: List[List[int]],
+         sampling_info: SamplingBatchInfo,
+         batch_next_token_ids: torch.Tensor,
+@@ -328,6 +335,13 @@ class Sampler(nn.Module):
+                 logits_output.next_token_top_logprobs_idx,
+             ) = get_top_logprobs(logprobs, top_logprobs_nums)
+ 
++        # Attach top-p logprobs
++        if top_logprobs_ps is not None and any(x > 0.0 for x in top_logprobs_ps):
++            (
++                logits_output.next_token_top_p_logprobs_val,
++                logits_output.next_token_top_p_logprobs_idx,
++            ) = get_top_p_logprobs(logprobs, top_logprobs_ps)
++
+         if any(x is not None for x in token_ids_logprobs):
+             (
+                 logits_output.next_token_token_ids_logprobs_val,
+@@ -362,6 +376,7 @@ class Sampler(nn.Module):
+         sampling_info: SamplingBatchInfo,
+         return_logprob: bool,
+         top_logprobs_nums: List[int],
++        top_logprobs_ps: Optional[List[float]],
+         token_ids_logprobs: List[List[int]],
+     ) -> None:
+         """
+diff --git a/python/sglang/srt/layers/utils/logprob.py b/python/sglang/srt/layers/utils/logprob.py
+index 6f84c15ff..25b31fb50 100644
+--- a/python/sglang/srt/layers/utils/logprob.py
++++ b/python/sglang/srt/layers/utils/logprob.py
+@@ -25,6 +25,8 @@ class InputLogprobsResult:
+     input_token_logprobs: torch.Tensor
+     input_top_logprobs_val: Optional[List] = None
+     input_top_logprobs_idx: Optional[List] = None
++    input_top_p_logprobs_val: Optional[List] = None
++    input_top_p_logprobs_idx: Optional[List] = None
+     input_token_ids_logprobs_val: Optional[List] = None
+     input_token_ids_logprobs_idx: Optional[List] = None
+ 
+@@ -96,6 +98,75 @@ def get_top_logprobs_raw(
+     return top_logprobs_val, top_logprobs_idx
+ 
+ 
++
++def get_top_p_logprobs_raw(
++    logprobs: torch.Tensor,
++    top_logprobs_ps: List[float],
++    stage: LogprobStage,
++    extend_logprob_pruned_lens_cpu: Optional[List[int]] = None,
++    no_copy_to_cpu: bool = False,
++):
++    """Get top-p logprobs: return tokens whose cumulative probability >= top_p threshold."""
++    sorted_logprobs, sorted_indices = logprobs.sort(dim=-1, descending=True)
++    sorted_probs = sorted_logprobs.exp()
++    cumsum_probs = torch.cumsum(sorted_probs, dim=-1)
++
++    top_logprobs_val = []
++    top_logprobs_idx = []
++
++    if stage == LogprobStage.DECODE:
++        cumsum_cpu = cumsum_probs.cpu()
++        sorted_logprobs_cpu = sorted_logprobs.cpu()
++        sorted_indices_cpu = sorted_indices.cpu()
++
++        for i, p in enumerate(top_logprobs_ps):
++            if p <= 0.0:
++                top_logprobs_val.append([])
++                top_logprobs_idx.append([])
++                continue
++            mask = cumsum_cpu[i] >= p
++            if mask.any():
++                cutoff = mask.nonzero(as_tuple=True)[0][0].item() + 1
++            else:
++                cutoff = sorted_logprobs_cpu.shape[1]
++            cutoff = max(cutoff, 1)
++            top_logprobs_val.append(sorted_logprobs_cpu[i, :cutoff].tolist())
++            top_logprobs_idx.append(sorted_indices_cpu[i, :cutoff].tolist())
++    else:
++        cumsum_cpu = cumsum_probs.cpu()
++        sorted_logprobs_cpu = sorted_logprobs.cpu()
++        sorted_indices_cpu = sorted_indices.cpu()
++
++        pt = 0
++        for p, pruned_len in zip(top_logprobs_ps, extend_logprob_pruned_lens_cpu):
++            if pruned_len <= 0:
++                top_logprobs_val.append([])
++                top_logprobs_idx.append([])
++                continue
++
++            pos_vals = []
++            pos_idxs = []
++            for j in range(pruned_len):
++                row = pt + j
++                if p <= 0.0:
++                    pos_vals.append([])
++                    pos_idxs.append([])
++                    continue
++                mask = cumsum_cpu[row] >= p
++                if mask.any():
++                    cutoff = mask.nonzero(as_tuple=True)[0][0].item() + 1
++                else:
++                    cutoff = sorted_logprobs_cpu.shape[1]
++                cutoff = max(cutoff, 1)
++                pos_vals.append(sorted_logprobs_cpu[row, :cutoff].tolist())
++                pos_idxs.append(sorted_indices_cpu[row, :cutoff].tolist())
++            top_logprobs_val.append(pos_vals)
++            top_logprobs_idx.append(pos_idxs)
++            pt += pruned_len
++
++    return top_logprobs_val, top_logprobs_idx
++
++
+ def get_top_logprobs_prefill(
+     all_logprobs: torch.Tensor, logits_metadata: LogitsMetadata
+ ):
+@@ -114,6 +185,30 @@ def get_top_logprobs(
+     return get_top_logprobs_raw(logprobs, top_logprobs_nums, stage=LogprobStage.DECODE)
+ 
+ 
++def get_top_p_logprobs_prefill(
++    all_logprobs: torch.Tensor, logits_metadata: "LogitsMetadata"
++):
++    return get_top_p_logprobs_raw(
++        all_logprobs,
++        logits_metadata.top_logprobs_ps,
++        stage=LogprobStage.PREFILL,
++        extend_logprob_pruned_lens_cpu=logits_metadata.extend_logprob_pruned_lens_cpu,
++    )
++
++
++def get_top_p_logprobs(
++    logprobs: torch.Tensor,
++    top_logprobs_ps: List[float],
++    no_copy_to_cpu: bool = False,
++):
++    return get_top_p_logprobs_raw(
++        logprobs,
++        top_logprobs_ps,
++        stage=LogprobStage.DECODE,
++        no_copy_to_cpu=no_copy_to_cpu,
++    )
++
++
+ def get_token_ids_logprobs_raw(
+     logprobs: torch.Tensor,
+     token_ids_logprobs: List[Optional[List[int]]],
 diff --git a/python/sglang/srt/managers/detokenizer_manager.py b/python/sglang/srt/managers/detokenizer_manager.py
-index 652227860..7d3a5d0c4 100644
+index 652227860..0db2cbcac 100644
 --- a/python/sglang/srt/managers/detokenizer_manager.py
 +++ b/python/sglang/srt/managers/detokenizer_manager.py
-@@ -405,6 +405,17 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
+@@ -387,6 +387,10 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
+             input_top_logprobs_idx=recv_obj.input_top_logprobs_idx,
+             output_top_logprobs_val=recv_obj.output_top_logprobs_val,
+             output_top_logprobs_idx=recv_obj.output_top_logprobs_idx,
++            input_top_p_logprobs_val=recv_obj.input_top_p_logprobs_val,
++            input_top_p_logprobs_idx=recv_obj.input_top_p_logprobs_idx,
++            output_top_p_logprobs_val=recv_obj.output_top_p_logprobs_val,
++            output_top_p_logprobs_idx=recv_obj.output_top_p_logprobs_idx,
+             input_token_ids_logprobs_val=recv_obj.input_token_ids_logprobs_val,
+             input_token_ids_logprobs_idx=recv_obj.input_token_ids_logprobs_idx,
+             output_token_ids_logprobs_val=recv_obj.output_token_ids_logprobs_val,
+@@ -405,6 +409,17 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
              prefill_launch_delay=recv_obj.prefill_launch_delay,
              prefill_launch_latency=recv_obj.prefill_launch_latency,
              prefill_finished_ts=recv_obj.prefill_finished_ts,
@@ -1930,7 +2093,7 @@ index 652227860..7d3a5d0c4 100644
  
      def handle_multimodal_decode_req(self, recv_obj: BatchMultimodalDecodeReq):
 diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
-index ff1774567..f947e71d7 100644
+index ff1774567..df07928cd 100644
 --- a/python/sglang/srt/managers/io_struct.py
 +++ b/python/sglang/srt/managers/io_struct.py
 @@ -101,6 +101,42 @@ class RequestTimingMetricsMixin:
@@ -1976,7 +2139,80 @@ index ff1774567..f947e71d7 100644
  
  @dataclass
  class SpeculativeDecodingMetricsMixin:
-@@ -1403,6 +1439,20 @@ class UpdateWeightsFromIPCReqOutput(BaseReq):
+@@ -198,8 +234,12 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
+     top_logprobs_num: Optional[Union[List[int], int]] = None
+     # If return logprobs, the token ids to return logprob for.
+     token_ids_logprob: Optional[Union[List[List[int]], List[int]]] = None
++    # If return logprobs, the top-p threshold for returning variable-length top logprobs per position.
++    top_logprobs_p: Optional[Union[List[float], float]] = None
+     # Whether to detokenize tokens in text in the returned logprobs.
+     return_text_in_logprobs: bool = False
++    # Whether to return logprobs encoded in base64 format.
++    return_logprobs_in_base64: bool = False
+     # Whether to stream output.
+     stream: bool = False
+     # Whether to log metrics for this request (e.g. health_generate calls do not log metrics)
+@@ -389,6 +429,8 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
+             self.top_logprobs_num = 0
+         if not self.token_ids_logprob:  # covers both None and []
+             self.token_ids_logprob = None
++        if self.top_logprobs_p is None:
++            self.top_logprobs_p = 0.0
+ 
+     def _normalize_batch_inputs(self):
+         """Normalize inputs for a batch of examples, including parallel sampling expansion."""
+@@ -552,6 +594,9 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
+         self.top_logprobs_num = normalize_param(
+             self.top_logprobs_num, 0, "top_logprobs_num"
+         )
++        self.top_logprobs_p = normalize_param(
++            self.top_logprobs_p, 0.0, "top_logprobs_p"
++        )
+ 
+         # Handle token_ids_logprob specially due to its nested structure
+         if not self.token_ids_logprob:  # covers both None and []
+@@ -636,7 +681,9 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
+             logprob_start_len=self.logprob_start_len[i],
+             top_logprobs_num=self.top_logprobs_num[i],
+             token_ids_logprob=self.token_ids_logprob[i],
++            top_logprobs_p=self.top_logprobs_p[i],
+             return_text_in_logprobs=self.return_text_in_logprobs,
++            return_logprobs_in_base64=self.return_logprobs_in_base64,
+             stream=self.stream,
+             log_metrics=self.log_metrics,
+             return_hidden_states=(
+@@ -709,6 +756,8 @@ class TokenizedGenerateReqInput(BaseReq):
+     top_logprobs_num: int
+     # If return logprobs, the token id to return logprob for
+     token_ids_logprob: List[int]
++    # If return logprobs, the top-p threshold for variable-length top logprobs
++    top_logprobs_p: float
+     # Whether to stream output
+     stream: bool
+ 
+@@ -1008,6 +1057,10 @@ class BatchTokenIDOutput(
+     input_top_logprobs_idx: List[List]
+     output_top_logprobs_val: List[List]
+     output_top_logprobs_idx: List[List]
++    input_top_p_logprobs_val: List[List]
++    input_top_p_logprobs_idx: List[List]
++    output_top_p_logprobs_val: List[List]
++    output_top_p_logprobs_idx: List[List]
+     input_token_ids_logprobs_val: List[List]
+     input_token_ids_logprobs_idx: List[List]
+     output_token_ids_logprobs_val: List[List]
+@@ -1098,6 +1151,10 @@ class BatchStrOutput(
+     input_top_logprobs_idx: List[List]
+     output_top_logprobs_val: List[List]
+     output_top_logprobs_idx: List[List]
++    input_top_p_logprobs_val: List[List]
++    input_top_p_logprobs_idx: List[List]
++    output_top_p_logprobs_val: List[List]
++    output_top_p_logprobs_idx: List[List]
+     input_token_ids_logprobs_val: List[List]
+     input_token_ids_logprobs_idx: List[List]
+     output_token_ids_logprobs_val: List[List]
+@@ -1403,6 +1460,20 @@ class UpdateWeightsFromIPCReqOutput(BaseReq):
      message: str
  
  
@@ -1997,7 +2233,7 @@ index ff1774567..f947e71d7 100644
  @dataclass
  class InitWeightsSendGroupForRemoteInstanceReqOutput(BaseReq):
      success: bool
-@@ -1802,6 +1852,10 @@ class GetLoadReqOutput(BaseReq):
+@@ -1802,6 +1873,10 @@ class GetLoadReqOutput(BaseReq):
      num_waiting_reqs: int
      num_tokens: int
      ts_tic: float
@@ -2205,10 +2441,92 @@ index e1236aa0f..daa598a1f 100644
  class SenderWrapper:
      def __init__(self, port_args: PortArgs, send_to_scheduler: zmq.Socket):
 diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
-index c07995798..dd8ca7167 100644
+index c07995798..c34c639f0 100644
 --- a/python/sglang/srt/managers/schedule_batch.py
 +++ b/python/sglang/srt/managers/schedule_batch.py
-@@ -1869,7 +1869,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+@@ -520,6 +520,7 @@ class Req(ReqDllmMixin):
+         sampling_params: SamplingParams,
+         return_logprob: bool = False,
+         top_logprobs_num: int = 0,
++        top_logprobs_p: float = 0.0,
+         dllm_config: Optional[DllmConfig] = None,
+         token_ids_logprob: List[int] = None,
+         stream: bool = False,
+@@ -691,6 +692,7 @@ class Req(ReqDllmMixin):
+         # Start index to compute logprob from.
+         self.logprob_start_len = 0
+         self.top_logprobs_num = top_logprobs_num
++        self.top_logprobs_p = top_logprobs_p
+         self.token_ids_logprob = token_ids_logprob
+         self.temp_scaled_logprobs = False
+         self.top_p_normalized_logprobs = False
+@@ -702,12 +704,16 @@ class Req(ReqDllmMixin):
+         self.input_token_logprobs_idx: Optional[List[int]] = None
+         self.input_top_logprobs_val: Optional[List[float]] = None
+         self.input_top_logprobs_idx: Optional[List[int]] = None
++        self.input_top_p_logprobs_val: Optional[List] = None
++        self.input_top_p_logprobs_idx: Optional[List] = None
+         self.input_token_ids_logprobs_val: Optional[List[float]] = None
+         self.input_token_ids_logprobs_idx: Optional[List[int]] = None
+         # Temporary holder to store input_token_logprobs.
+         self.input_token_logprobs: Optional[List[Tuple[int]]] = None
+         self.temp_input_top_logprobs_val: Optional[List[torch.Tensor]] = None
+         self.temp_input_top_logprobs_idx: Optional[List[int]] = None
++        self.temp_input_top_p_logprobs_val: Optional[List] = None
++        self.temp_input_top_p_logprobs_idx: Optional[List] = None
+         self.temp_input_token_ids_logprobs_val: Optional[List[float]] = None
+         self.temp_input_token_ids_logprobs_idx: Optional[List[int]] = None
+ 
+@@ -718,6 +724,9 @@ class Req(ReqDllmMixin):
+             # shape: (bs, k)
+             self.output_top_logprobs_val = []
+             self.output_top_logprobs_idx = []
++            # shape: (bs, variable) for top-p logprobs
++            self.output_top_p_logprobs_val = []
++            self.output_top_p_logprobs_idx = []
+             # Can contain either lists or GPU tensors (delayed copy optimization for prefill-only scoring)
+             self.output_token_ids_logprobs_val: List[
+                 Union[List[float], torch.Tensor]
+@@ -726,7 +735,9 @@ class Req(ReqDllmMixin):
+         else:
+             self.output_token_logprobs_val = self.output_token_logprobs_idx = (
+                 self.output_top_logprobs_val
+-            ) = self.output_top_logprobs_idx = self.output_token_ids_logprobs_val = (
++            ) = self.output_top_logprobs_idx = self.output_top_p_logprobs_val = (
++                self.output_top_p_logprobs_idx
++            ) = self.output_token_ids_logprobs_val = (
+                 self.output_token_ids_logprobs_idx
+             ) = None
+         self.hidden_states: List[List[float]] = []
+@@ -1116,6 +1127,8 @@ class Req(ReqDllmMixin):
+         self.input_token_logprobs = None
+         self.temp_input_top_logprobs_val = None
+         self.temp_input_top_logprobs_idx = None
++        self.temp_input_top_p_logprobs_val = None
++        self.temp_input_top_p_logprobs_idx = None
+         self.extend_logprob_start_len = 0
+         self.is_chunked = 0
+         self.mamba_pool_idx = None
+@@ -1259,7 +1272,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+ 
+     # For processing logprobs
+     return_logprob: bool = False
+-    top_logprobs_nums: Optional[List[int]] = None
++    top_logprobs_nums: Optional[List[int]]
++    top_logprobs_ps: Optional[List[float]] = None
++    top_logprobs_ps: Optional[List[float]] = None
+     token_ids_logprobs: Optional[List[List[int]]] = None
+ 
+     # For logits and logprob post processing
+@@ -1651,6 +1666,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+ 
+         if self.return_logprob:
+             self.top_logprobs_nums = [r.top_logprobs_num for r in reqs]
++            self.top_logprobs_ps = [r.top_logprobs_p for r in reqs]
+             self.token_ids_logprobs = [r.token_ids_logprob for r in reqs]
+ 
+         self.extend_logprob_start_lens = [r.extend_logprob_start_len for r in reqs]
+@@ -1869,7 +1885,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
          while first_iter or (
              not self.check_decode_mem(selected_indices=sorted_indices)
          ):
@@ -2220,8 +2538,44 @@ index c07995798..dd8ca7167 100644
                  # Always keep at least one request
                  break
  
+@@ -2094,9 +2113,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         self.return_logprob = any(req.return_logprob for req in self.reqs)
+         if self.return_logprob:
+             self.top_logprobs_nums = [self.top_logprobs_nums[i] for i in keep_indices]
++            self.top_logprobs_ps = [self.top_logprobs_ps[i] for i in keep_indices]
+             self.token_ids_logprobs = [self.token_ids_logprobs[i] for i in keep_indices]
+         else:
+             self.top_logprobs_nums = None
++            self.top_logprobs_ps = None
+             self.token_ids_logprobs = None
+ 
+         self.has_stream = any(req.stream for req in self.reqs)
+@@ -2143,12 +2164,15 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         self.mamba_track_seqlens = None
+         if self.return_logprob and other.return_logprob:
+             self.top_logprobs_nums.extend(other.top_logprobs_nums)
++            self.top_logprobs_ps.extend(other.top_logprobs_ps)
+             self.token_ids_logprobs.extend(other.token_ids_logprobs)
+         elif self.return_logprob:
+             self.top_logprobs_nums.extend([0] * len(other.reqs))
++            self.top_logprobs_ps.extend([0.0] * len(other.reqs))
+             self.token_ids_logprobs.extend([None] * len(other.reqs))
+         elif other.return_logprob:
+             self.top_logprobs_nums = [0] * len(self.reqs) + other.top_logprobs_nums
++            self.top_logprobs_ps = [0.0] * len(self.reqs) + other.top_logprobs_ps
+             self.token_ids_logprobs = [None] * len(self.reqs) + other.token_ids_logprobs
+         self.reqs.extend(other.reqs)
+         if self.multimodal_inputs is not None:
+@@ -2193,6 +2217,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+             seq_lens_sum=self.seq_lens_sum,
+             return_logprob=self.return_logprob,
+             top_logprobs_nums=self.top_logprobs_nums,
++            top_logprobs_ps=self.top_logprobs_ps,
+             token_ids_logprobs=self.token_ids_logprobs,
+             global_num_tokens=self.global_num_tokens,
+             global_num_tokens_for_logprob=self.global_num_tokens_for_logprob,
 diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
-index a9ff0ac94..c124f43bc 100644
+index a9ff0ac94..264b177f7 100644
 --- a/python/sglang/srt/managers/scheduler.py
 +++ b/python/sglang/srt/managers/scheduler.py
 @@ -114,6 +114,7 @@ from sglang.srt.managers.io_struct import (
@@ -2261,6 +2615,14 @@ index a9ff0ac94..c124f43bc 100644
                  (GetWeightsByNameReqInput, self.get_weights_by_name),
                  (ReleaseMemoryOccupationReqInput, self.release_memory_occupation),
                  (ResumeMemoryOccupationReqInput, self.resume_memory_occupation),
+@@ -1505,6 +1512,7 @@ class Scheduler(
+                 recv_req.sampling_params,
+                 return_logprob=recv_req.return_logprob,
+                 top_logprobs_num=recv_req.top_logprobs_num,
++                top_logprobs_p=recv_req.top_logprobs_p,
+                 token_ids_logprob=recv_req.token_ids_logprob,
+                 stream=recv_req.stream,
+                 lora_id=recv_req.lora_id,
 diff --git a/python/sglang/srt/managers/scheduler_metrics_mixin.py b/python/sglang/srt/managers/scheduler_metrics_mixin.py
 index 30b2732b9..68090b161 100644
 --- a/python/sglang/srt/managers/scheduler_metrics_mixin.py
@@ -2321,10 +2683,95 @@ index 30b2732b9..68090b161 100644
  
      def get_loads(self: Scheduler, req: GetLoadsReqInput = None) -> GetLoadsReqOutput:
 diff --git a/python/sglang/srt/managers/scheduler_output_processor_mixin.py b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
-index 482bc6ca6..fbc486417 100644
+index 482bc6ca6..26f18c3c4 100644
 --- a/python/sglang/srt/managers/scheduler_output_processor_mixin.py
 +++ b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
-@@ -922,6 +922,18 @@ class SchedulerOutputProcessorMixin:
+@@ -623,6 +623,32 @@ class SchedulerOutputProcessorMixin:
+         # Clean up temp storage
+         req.temp_input_top_logprobs_idx = None
+         req.temp_input_top_logprobs_val = None
++    def _process_input_top_p_logprobs(self: Scheduler, req: Req) -> None:
++        """Process input top-p logprobs."""
++        if req.top_logprobs_p <= 0.0:
++            return
++
++        is_multi_item_scoring = self._is_multi_item_scoring(req)
++
++        req.input_top_p_logprobs_val = [] if is_multi_item_scoring else [None]
++        req.input_top_p_logprobs_idx = [] if is_multi_item_scoring else [None]
++
++        for val, idx in zip(
++            req.temp_input_top_p_logprobs_val,
++            req.temp_input_top_p_logprobs_idx,
++            strict=True,
++        ):
++            req.input_top_p_logprobs_val.extend(val)
++            req.input_top_p_logprobs_idx.extend(idx)
++
++        if not is_multi_item_scoring:
++            req.input_top_p_logprobs_val.pop()
++            req.input_top_p_logprobs_idx.pop()
++
++        req.temp_input_top_p_logprobs_idx = None
++        req.temp_input_top_p_logprobs_val = None
++
++
+ 
+     def _process_input_token_ids_logprobs(self, req: Req) -> None:
+         """Process input token IDs logprobs."""
+@@ -737,6 +763,10 @@ class SchedulerOutputProcessorMixin:
+             req.temp_input_top_logprobs_val = []
+         if req.temp_input_top_logprobs_idx is None:
+             req.temp_input_top_logprobs_idx = []
++        if req.temp_input_top_p_logprobs_val is None:
++            req.temp_input_top_p_logprobs_val = []
++        if req.temp_input_top_p_logprobs_idx is None:
++            req.temp_input_top_p_logprobs_idx = []
+         if req.temp_input_token_ids_logprobs_val is None:
+             req.temp_input_token_ids_logprobs_val = []
+         if req.temp_input_token_ids_logprobs_idx is None:
+@@ -761,6 +791,10 @@ class SchedulerOutputProcessorMixin:
+             req.temp_input_top_logprobs_val.append(output.input_top_logprobs_val[i])
+             req.temp_input_top_logprobs_idx.append(output.input_top_logprobs_idx[i])
+ 
++        if req.top_logprobs_p > 0.0 and output.input_top_p_logprobs_val is not None:
++            req.temp_input_top_p_logprobs_val.append(output.input_top_p_logprobs_val[i])
++            req.temp_input_top_p_logprobs_idx.append(output.input_top_p_logprobs_idx[i])
++
+         if req.token_ids_logprob is not None:
+             req.temp_input_token_ids_logprobs_val.append(
+                 output.input_token_ids_logprobs_val[i]
+@@ -780,6 +814,7 @@ class SchedulerOutputProcessorMixin:
+             # Process all input logprob types using helper functions
+             self._process_input_token_logprobs(req, input_token_logprobs)
+             self._process_input_top_logprobs(req)
++            self._process_input_top_p_logprobs(req)
+ 
+             self._process_input_token_ids_logprobs(req)
+ 
+@@ -822,6 +857,10 @@ class SchedulerOutputProcessorMixin:
+             req.output_top_logprobs_val.append(output.next_token_top_logprobs_val[i])
+             req.output_top_logprobs_idx.append(output.next_token_top_logprobs_idx[i])
+ 
++        if req.top_logprobs_p > 0.0 and output.next_token_top_p_logprobs_val is not None:
++            req.output_top_p_logprobs_val.append(output.next_token_top_p_logprobs_val[i])
++            req.output_top_p_logprobs_idx.append(output.next_token_top_p_logprobs_idx[i])
++
+         if (
+             req.token_ids_logprob is not None
+             and output.next_token_token_ids_logprobs_val is not None
+@@ -852,6 +891,10 @@ class SchedulerOutputProcessorMixin:
+             req.input_top_logprobs_val = []
+         if req.input_top_logprobs_idx is None:
+             req.input_top_logprobs_idx = []
++        if req.input_top_p_logprobs_val is None:
++            req.input_top_p_logprobs_val = []
++        if req.input_top_p_logprobs_idx is None:
++            req.input_top_p_logprobs_idx = []
+         if req.input_token_ids_logprobs_val is None:
+             req.input_token_ids_logprobs_val = []
+         if req.input_token_ids_logprobs_idx is None:
+@@ -922,6 +965,18 @@ class SchedulerOutputProcessorMixin:
          prefill_launch_delays = []
          prefill_launch_latencies = []
          prefill_finished_timestamps = []
@@ -2343,7 +2790,33 @@ index 482bc6ca6..fbc486417 100644
  
          if return_logprob:
              input_token_logprobs_val = []
-@@ -1037,6 +1049,40 @@ class SchedulerOutputProcessorMixin:
+@@ -932,6 +987,10 @@ class SchedulerOutputProcessorMixin:
+             input_top_logprobs_idx = []
+             output_top_logprobs_val = []
+             output_top_logprobs_idx = []
++            input_top_p_logprobs_val = []
++            input_top_p_logprobs_idx = []
++            output_top_p_logprobs_val = []
++            output_top_p_logprobs_idx = []
+             input_token_ids_logprobs_val = []
+             input_token_ids_logprobs_idx = []
+             output_token_ids_logprobs_val = []
+@@ -942,8 +1001,12 @@ class SchedulerOutputProcessorMixin:
+             ) = output_token_logprobs_idx = input_top_logprobs_val = (
+                 input_top_logprobs_idx
+             ) = output_top_logprobs_val = output_top_logprobs_idx = (
+-                input_token_ids_logprobs_val
+-            ) = input_token_ids_logprobs_idx = output_token_ids_logprobs_val = (
++                input_top_p_logprobs_val
++            ) = input_top_p_logprobs_idx = output_top_p_logprobs_val = (
++                output_top_p_logprobs_idx
++            ) = input_token_ids_logprobs_val = (
++                input_token_ids_logprobs_idx
++            ) = output_token_ids_logprobs_val = (
+                 output_token_ids_logprobs_idx
+             ) = None
+ 
+@@ -1037,6 +1100,40 @@ class SchedulerOutputProcessorMixin:
                  prefill_finished_timestamps.append(
                      req.time_stats.get_prefill_finished_ts()
                  )
@@ -2384,7 +2857,34 @@ index 482bc6ca6..fbc486417 100644
  
                  if not self.spec_algorithm.is_none():
                      spec_verify_ct.append(req.spec_verify_ct)
-@@ -1134,7 +1180,7 @@ class SchedulerOutputProcessorMixin:
+@@ -1054,6 +1151,8 @@ class SchedulerOutputProcessorMixin:
+                         input_token_logprobs_idx.append(req.input_token_logprobs_idx)
+                         input_top_logprobs_val.append(req.input_top_logprobs_val)
+                         input_top_logprobs_idx.append(req.input_top_logprobs_idx)
++                        input_top_p_logprobs_val.append(req.input_top_p_logprobs_val)
++                        input_top_p_logprobs_idx.append(req.input_top_p_logprobs_idx)
+                         input_token_ids_logprobs_val.append(
+                             req.input_token_ids_logprobs_val
+                         )
+@@ -1066,6 +1165,8 @@ class SchedulerOutputProcessorMixin:
+                         input_token_logprobs_idx.append([])
+                         input_top_logprobs_val.append([])
+                         input_top_logprobs_idx.append([])
++                        input_top_p_logprobs_val.append([])
++                        input_top_p_logprobs_idx.append([])
+                         input_token_ids_logprobs_val.append([])
+                         input_token_ids_logprobs_idx.append([])
+ 
+@@ -1108,6 +1209,8 @@ class SchedulerOutputProcessorMixin:
+                         output_token_logprobs_idx.append([])
+                         output_top_logprobs_val.append([])
+                         output_top_logprobs_idx.append([])
++                        output_top_p_logprobs_val.append([])
++                        output_top_p_logprobs_idx.append([])
+                         output_token_ids_logprobs_val.append([])
+                         output_token_ids_logprobs_idx.append([])
+ 
+@@ -1134,7 +1237,7 @@ class SchedulerOutputProcessorMixin:
                  req.log_time_stats()
  
          # Send to detokenizer
@@ -2393,7 +2893,7 @@ index 482bc6ca6..fbc486417 100644
              if self.model_config.is_multimodal_gen:
                  return
              self.send_to_detokenizer.send_output(
-@@ -1149,6 +1195,17 @@ class SchedulerOutputProcessorMixin:
+@@ -1149,6 +1252,17 @@ class SchedulerOutputProcessorMixin:
                      prefill_launch_delay=prefill_launch_delays,
                      prefill_launch_latency=prefill_launch_latencies,
                      prefill_finished_ts=prefill_finished_timestamps,
@@ -2411,7 +2911,18 @@ index 482bc6ca6..fbc486417 100644
                      finished_reasons=finished_reasons,
                      decoded_texts=decoded_texts,
                      decode_ids=decode_ids_list,
-@@ -1198,6 +1255,18 @@ class SchedulerOutputProcessorMixin:
+@@ -1169,6 +1283,10 @@ class SchedulerOutputProcessorMixin:
+                     input_top_logprobs_idx=input_top_logprobs_idx,
+                     output_top_logprobs_val=output_top_logprobs_val,
+                     output_top_logprobs_idx=output_top_logprobs_idx,
++                    input_top_p_logprobs_val=input_top_p_logprobs_val,
++                    input_top_p_logprobs_idx=input_top_p_logprobs_idx,
++                    output_top_p_logprobs_val=output_top_p_logprobs_val,
++                    output_top_p_logprobs_idx=output_top_p_logprobs_idx,
+                     input_token_ids_logprobs_val=input_token_ids_logprobs_val,
+                     input_token_ids_logprobs_idx=input_token_ids_logprobs_idx,
+                     output_token_ids_logprobs_val=output_token_ids_logprobs_val,
+@@ -1198,6 +1316,18 @@ class SchedulerOutputProcessorMixin:
          prefill_launch_delays = []
          prefill_launch_latencies = []
          prefill_finished_timestamps = []
@@ -2430,7 +2941,7 @@ index 482bc6ca6..fbc486417 100644
          retraction_counts = []
          for req in reqs:
              if req.finished():
-@@ -1221,6 +1290,40 @@ class SchedulerOutputProcessorMixin:
+@@ -1221,6 +1351,40 @@ class SchedulerOutputProcessorMixin:
                  prefill_finished_timestamps.append(
                      req.time_stats.get_prefill_finished_ts()
                  )
@@ -2471,7 +2982,7 @@ index 482bc6ca6..fbc486417 100644
                  retraction_counts.append(req.retraction_count)
          self.send_to_detokenizer.send_output(
              BatchEmbeddingOutput(
-@@ -1231,6 +1334,17 @@ class SchedulerOutputProcessorMixin:
+@@ -1231,6 +1395,17 @@ class SchedulerOutputProcessorMixin:
                  prefill_launch_delay=prefill_launch_delays,
                  prefill_launch_latency=prefill_launch_latencies,
                  prefill_finished_ts=prefill_finished_timestamps,
@@ -2817,10 +3328,30 @@ index f2ffa9909..6e4d1d460 100644
          self,
          obj: InitWeightsSendGroupForRemoteInstanceReqInput,
 diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
-index 0914a5230..33bb3844a 100644
+index 0914a5230..bae56524d 100644
 --- a/python/sglang/srt/managers/tokenizer_manager.py
 +++ b/python/sglang/srt/managers/tokenizer_manager.py
-@@ -324,8 +324,12 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+@@ -163,6 +163,10 @@ class ReqState:
+     input_top_logprobs_idx: List[List[int]] = dataclasses.field(default_factory=list)
+     output_top_logprobs_val: List[List[float]] = dataclasses.field(default_factory=list)
+     output_top_logprobs_idx: List[List[int]] = dataclasses.field(default_factory=list)
++    input_top_p_logprobs_val: List = dataclasses.field(default_factory=list)
++    input_top_p_logprobs_idx: List = dataclasses.field(default_factory=list)
++    output_top_p_logprobs_val: List = dataclasses.field(default_factory=list)
++    output_top_p_logprobs_idx: List = dataclasses.field(default_factory=list)
+     input_token_ids_logprobs_val: List = dataclasses.field(default_factory=list)
+     input_token_ids_logprobs_idx: List = dataclasses.field(default_factory=list)
+     output_token_ids_logprobs_val: List = dataclasses.field(default_factory=list)
+@@ -173,6 +177,8 @@ class ReqState:
+     output_token_logprobs: List[Any] = dataclasses.field(default_factory=list)
+     input_top_logprobs: List[Any] = dataclasses.field(default_factory=list)
+     output_top_logprobs: List[Any] = dataclasses.field(default_factory=list)
++    input_top_p_logprobs: List[Any] = dataclasses.field(default_factory=list)
++    output_top_p_logprobs: List[Any] = dataclasses.field(default_factory=list)
+     input_token_ids_logprobs: List[Any] = dataclasses.field(default_factory=list)
+     output_token_ids_logprobs: List[Any] = dataclasses.field(default_factory=list)
+ 
+@@ -324,8 +330,12 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
              context, zmq.PULL, port_args.tokenizer_ipc_name, True
          )
          if self.server_args.tokenizer_worker_num == 1:
@@ -2834,7 +3365,15 @@ index 0914a5230..33bb3844a 100644
              )
          else:
              from sglang.srt.managers.multi_tokenizer_mixin import SenderWrapper
-@@ -1327,7 +1331,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+@@ -927,6 +937,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+                 obj.logprob_start_len,
+                 obj.top_logprobs_num,
+                 obj.token_ids_logprob,
++                obj.top_logprobs_p,
+                 obj.stream,
+                 rid=obj.rid,
+                 http_worker_ipc=obj.http_worker_ipc,
+@@ -1327,7 +1338,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
          async with self.is_pause_cond:
              self.is_pause = True
              if obj.mode != "abort":
@@ -2843,7 +3382,7 @@ index 0914a5230..33bb3844a 100644
              else:
                  # we are using the model_update_lock to check if there is still on-going requests.
                  while True:
-@@ -1341,7 +1345,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+@@ -1341,7 +1352,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
      async def continue_generation(self, obj: ContinueGenerationReqInput):
          async with self.is_pause_cond:
              self.is_pause = False
@@ -2852,7 +3391,7 @@ index 0914a5230..33bb3844a 100644
              self.is_pause_cond.notify_all()
  
      async def update_weights_from_disk(
-@@ -1510,6 +1514,40 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+@@ -1510,6 +1521,40 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                  self._add_metric_if_present(
                      recv_obj, "prefill_finished_ts", meta_info, i
                  )
@@ -2893,7 +3432,186 @@ index 0914a5230..33bb3844a 100644
  
              if getattr(state.obj, "return_logprob", False):
                  self.convert_logprob_style(
-@@ -1955,19 +1993,17 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+@@ -1684,7 +1729,40 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+             meta_info["input_top_logprobs"] = state.input_top_logprobs
+             meta_info["output_top_logprobs"] = state.output_top_logprobs
+ 
+-        # 3. Handle token_ids_logprob
++        # 3. Handle top-p logprobs
++        top_logprobs_p = getattr(state.obj, "top_logprobs_p", 0.0) or 0.0
++        if top_logprobs_p > 0.0:
++            if len(state.input_top_p_logprobs_val) > len(state.input_top_p_logprobs):
++                state.input_top_p_logprobs.extend(
++                    self.detokenize_top_logprobs_tokens(
++                        state.input_top_p_logprobs_val[
++                            len(state.input_top_p_logprobs) :
++                        ],
++                        state.input_top_p_logprobs_idx[
++                            len(state.input_top_p_logprobs) :
++                        ],
++                        return_text_in_logprobs,
++                    )
++                )
++            if len(state.output_top_p_logprobs_val) > len(
++                state.output_top_p_logprobs
++            ):
++                state.output_top_p_logprobs.extend(
++                    self.detokenize_top_logprobs_tokens(
++                        state.output_top_p_logprobs_val[
++                            len(state.output_top_p_logprobs) :
++                        ],
++                        state.output_top_p_logprobs_idx[
++                            len(state.output_top_p_logprobs) :
++                        ],
++                        return_text_in_logprobs,
++                    )
++                )
++
++            meta_info["input_top_p_logprobs"] = state.input_top_p_logprobs
++            meta_info["output_top_p_logprobs"] = state.output_top_p_logprobs
++
++        # 4. Handle token_ids_logprob
+         if token_ids_logprob is not None:
+             if len(state.input_token_ids_logprobs_val) > len(
+                 state.input_token_ids_logprobs
+@@ -1718,6 +1796,105 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+             meta_info["input_token_ids_logprobs"] = state.input_token_ids_logprobs
+             meta_info["output_token_ids_logprobs"] = state.output_token_ids_logprobs
+ 
++        # 5. Handle base64 encoding for top-k and top-p logprobs
++        return_logprobs_in_base64 = getattr(
++            state.obj, "return_logprobs_in_base64", False
++        )
++        if return_logprobs_in_base64:
++            self._encode_logprobs_as_base64(meta_info, state, top_logprobs_num)
++
++
++    @staticmethod
++    def _encode_logprobs_as_base64(
++        meta_info: dict, state: "ReqState", top_logprobs_num: int
++    ):
++        """Encode top-k and top-p logprobs as base64-encoded numpy arrays."""
++        import numpy as np
++        import pybase64
++
++        def encode_fixed_length(vals_raw, idxs_raw, key_prefix):
++            if not vals_raw:
++                return
++            filtered_vals = []
++            filtered_idxs = []
++            none_positions = []
++            for pos_i, (v, x) in enumerate(zip(vals_raw, idxs_raw)):
++                if v is None:
++                    none_positions.append(pos_i)
++                else:
++                    filtered_vals.append(v)
++                    filtered_idxs.append(x)
++            if not filtered_vals:
++                return
++            val_arr = np.array(filtered_vals, dtype=np.float32)
++            idx_arr = np.array(filtered_idxs, dtype=np.int32)
++            meta_info[f"{key_prefix}_val_base64"] = pybase64.b64encode(
++                val_arr.tobytes()
++            ).decode("utf-8")
++            meta_info[f"{key_prefix}_idx_base64"] = pybase64.b64encode(
++                idx_arr.tobytes()
++            ).decode("utf-8")
++            meta_info[f"{key_prefix}_shape"] = list(val_arr.shape)
++            if none_positions:
++                meta_info[f"{key_prefix}_none_positions"] = none_positions
++            if key_prefix in meta_info:
++                del meta_info[key_prefix]
++
++        def encode_variable_length(vals_raw, idxs_raw, key_prefix):
++            if not vals_raw:
++                return
++            flat_vals = []
++            flat_idxs = []
++            lengths = []
++            for v, x in zip(vals_raw, idxs_raw):
++                if v is None:
++                    lengths.append(-1)
++                elif isinstance(v, list):
++                    lengths.append(len(v))
++                    flat_vals.extend(v)
++                    flat_idxs.extend(x)
++                else:
++                    lengths.append(0)
++            if not flat_vals:
++                meta_info[f"{key_prefix}_lengths"] = lengths
++                return
++            val_arr = np.array(flat_vals, dtype=np.float32)
++            idx_arr = np.array(flat_idxs, dtype=np.int32)
++            meta_info[f"{key_prefix}_val_base64"] = pybase64.b64encode(
++                val_arr.tobytes()
++            ).decode("utf-8")
++            meta_info[f"{key_prefix}_idx_base64"] = pybase64.b64encode(
++                idx_arr.tobytes()
++            ).decode("utf-8")
++            meta_info[f"{key_prefix}_lengths"] = lengths
++            if key_prefix in meta_info:
++                del meta_info[key_prefix]
++
++        if top_logprobs_num > 0:
++            encode_fixed_length(
++                state.input_top_logprobs_val,
++                state.input_top_logprobs_idx,
++                "input_top_logprobs",
++            )
++            encode_fixed_length(
++                state.output_top_logprobs_val,
++                state.output_top_logprobs_idx,
++                "output_top_logprobs",
++            )
++
++        top_logprobs_p = getattr(state.obj, "top_logprobs_p", 0.0) or 0.0
++        if top_logprobs_p > 0.0:
++            encode_variable_length(
++                state.input_top_p_logprobs_val,
++                state.input_top_p_logprobs_idx,
++                "input_top_p_logprobs",
++            )
++            encode_variable_length(
++                state.output_top_p_logprobs_val,
++                state.output_top_p_logprobs_idx,
++                "output_top_p_logprobs",
++            )
++
+     def convert_logprob_style(
+         self,
+         meta_info: dict,
+@@ -1763,6 +1940,30 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+                 recv_obj.output_top_logprobs_idx[recv_obj_index]
+             )
+ 
++        top_logprobs_p = getattr(state.obj, "top_logprobs_p", 0.0) or 0.0
++        if top_logprobs_p > 0.0:
++            if (
++                recv_obj.input_top_p_logprobs_val is not None
++                and len(recv_obj.input_top_p_logprobs_val) > 0
++                and recv_obj.input_top_p_logprobs_val[recv_obj_index]
++            ):
++                state.input_top_p_logprobs_val.extend(
++                    recv_obj.input_top_p_logprobs_val[recv_obj_index]
++                )
++                state.input_top_p_logprobs_idx.extend(
++                    recv_obj.input_top_p_logprobs_idx[recv_obj_index]
++                )
++            if (
++                recv_obj.output_top_p_logprobs_val is not None
++                and len(recv_obj.output_top_p_logprobs_val) > 0
++            ):
++                state.output_top_p_logprobs_val.extend(
++                    recv_obj.output_top_p_logprobs_val[recv_obj_index]
++                )
++                state.output_top_p_logprobs_idx.extend(
++                    recv_obj.output_top_p_logprobs_idx[recv_obj_index]
++                )
++
+         if token_ids_logprob is not None:
+             if len(recv_obj.input_token_ids_logprobs_val) > 0:
+                 state.input_token_ids_logprobs_val.extend(
+@@ -1955,19 +2156,17 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
              if custom_labels
              else self.metrics_collector.labels
          )
@@ -2919,7 +3637,7 @@ index 0914a5230..33bb3844a 100644
                  new_time = time.time()
                  interval = new_time - state.last_time
                  self.metrics_collector.observe_inter_token_latency(
-@@ -1976,7 +2012,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
+@@ -1976,7 +2175,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                      num_new_tokens,
                  )
                  state.last_time = new_time
@@ -3418,10 +4136,26 @@ index 255d41ccc..f93bedb4d 100644
          if self.disagg_mode == DisaggregationMode.NULL:
              queue_duration = self.forward_entry_time - self.wait_queue_entry_time
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index 234523532..f5d479945 100644
+index 234523532..307b656d3 100644
 --- a/python/sglang/srt/model_executor/forward_batch_info.py
 +++ b/python/sglang/srt/model_executor/forward_batch_info.py
-@@ -909,6 +909,28 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+@@ -266,6 +266,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+     # For logprob
+     return_logprob: bool = False
+     top_logprobs_nums: Optional[List[int]] = None
++    top_logprobs_ps: Optional[List[float]] = None
+     token_ids_logprobs: Optional[List[List[int]]] = None
+ 
+     # For logits and logprobs post processing
+@@ -399,6 +400,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+             orig_seq_lens=batch.orig_seq_lens,
+             return_logprob=batch.return_logprob,
+             top_logprobs_nums=batch.top_logprobs_nums,
++            top_logprobs_ps=batch.top_logprobs_ps,
+             token_ids_logprobs=batch.token_ids_logprobs,
+             is_extend_in_batch=batch.is_extend_in_batch,
+             can_run_dp_cuda_graph=batch.can_run_dp_cuda_graph,
+@@ -909,6 +911,28 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
          tokens_padded = (tokens + rank_size - 1) // rank_size * rank_size
          self._pad_inputs_to_size(model_runner, tokens_padded, self.batch_size)
  
@@ -3451,7 +4185,7 @@ index 234523532..f5d479945 100644
  
          self.forward_mode = getattr(self, "_original_forward_mode", self.forward_mode)
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 275775a73..f0bd3ebf8 100644
+index 275775a73..fdeb69306 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
 @@ -395,7 +395,12 @@ class ModelRunner(ModelRunnerKVCacheMixin):
@@ -3513,7 +4247,23 @@ index 275775a73..f0bd3ebf8 100644
  
          # Normalize num_token_non_padded to be local to this attention TP rank if needed.
          if (
-@@ -2664,6 +2681,42 @@ class ModelRunner(ModelRunnerKVCacheMixin):
+@@ -2553,6 +2570,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
+             forward_batch.sampling_info,
+             forward_batch.return_logprob,
+             forward_batch.top_logprobs_nums,
++            forward_batch.top_logprobs_ps,
+             forward_batch.token_ids_logprobs,
+             # For prefill, we only use the position of the last token.
+             (
+@@ -2592,6 +2610,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
+             forward_batch.sampling_info,
+             forward_batch.return_logprob,
+             forward_batch.top_logprobs_nums,
++            forward_batch.top_logprobs_ps,
+             forward_batch.token_ids_logprobs,
+         )
+ 
+@@ -2664,6 +2683,42 @@ class ModelRunner(ModelRunnerKVCacheMixin):
                      device=self.device,
                  )
  
