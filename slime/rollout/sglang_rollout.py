@@ -45,52 +45,65 @@ def _logsumexp(values: np.ndarray) -> float:
     return float(max_v + np.log(np.sum(np.exp(values - max_v))))
 
 
-def _extract_top_p_candidates(meta_info: dict[str, Any]) -> tuple[list[list[int]], list[float]] | None:
-    """Extract top-p candidates returned natively by sglang (base64 or list format)."""
-    # Base64 format (preferred — lower bandwidth)
+def _extract_top_p_candidates(meta_info: dict[str, Any]) -> list[list[tuple[int, float]]] | None:
+    """Extract top-p candidates from sglang response (base64 or list format).
+
+    Returns per-position list of ``(token_id, logprob)`` pairs, or ``None``.
+    """
+    # Base64 variable-length format
     val_b64 = meta_info.get("output_top_p_logprobs_val_base64")
     idx_b64 = meta_info.get("output_top_p_logprobs_idx_base64")
     lengths = meta_info.get("output_top_p_logprobs_lengths")
     if val_b64 and idx_b64 and lengths:
         flat_vals = np.frombuffer(pybase64.b64decode(val_b64), dtype=np.float32)
         flat_idxs = np.frombuffer(pybase64.b64decode(idx_b64), dtype=np.int32)
-        token_ids, logprob_sums = [], []
+        result: list[list[tuple[int, float]]] = []
         offset = 0
         for length in lengths:
             if length <= 0:
-                token_ids.append([])
-                logprob_sums.append(0.0)
+                result.append([])
             else:
-                token_ids.append(flat_idxs[offset : offset + length].tolist())
-                logprob_sums.append(_logsumexp(flat_vals[offset : offset + length]))
+                result.append(list(zip(
+                    flat_idxs[offset : offset + length].tolist(),
+                    flat_vals[offset : offset + length].tolist(),
+                )))
                 offset += length
-        return token_ids, logprob_sums
+        return result
 
-    # List format: list of list of (logprob, token_id, text) per position
+    # List format: [(logprob, token_id, text), ...] per position
     top_p_logprobs = meta_info.get("output_top_p_logprobs")
     if top_p_logprobs:
-        token_ids, logprob_sums = [], []
-        for entries in top_p_logprobs:
-            token_ids.append([tid for _, tid, *_ in entries])
-            lps = np.array([lp for lp, *_ in entries], dtype=np.float32)
-            logprob_sums.append(_logsumexp(lps))
-        return token_ids, logprob_sums
+        return [[(tid, lp) for lp, tid, *_ in entries] for entries in top_p_logprobs]
 
     return None
 
 
-def _extract_topk_candidates(meta_info: dict[str, Any], top_k: int) -> tuple[list[list[int]], list[float]] | None:
-    """Extract top-k candidates from sglang output_top_logprobs."""
+def _extract_topk_candidates(meta_info: dict[str, Any], top_k: int) -> list[list[tuple[int, float]]] | None:
+    """Extract top-k candidates from sglang response (base64 or list format).
+
+    Returns per-position list of ``(token_id, logprob)`` pairs, or ``None``.
+    """
+    # Base64 fixed-length format (present when return_logprobs_in_base64=True)
+    val_b64 = meta_info.get("output_top_logprobs_val_base64")
+    idx_b64 = meta_info.get("output_top_logprobs_idx_base64")
+    shape = meta_info.get("output_top_logprobs_shape")
+    if val_b64 and idx_b64 and shape:
+        vals = np.frombuffer(pybase64.b64decode(val_b64), dtype=np.float32).reshape(shape)
+        idxs = np.frombuffer(pybase64.b64decode(idx_b64), dtype=np.int32).reshape(shape)
+        k = min(top_k, shape[1])
+        return [
+            list(zip(idxs[i, :k].tolist(), vals[i, :k].tolist()))
+            for i in range(shape[0])
+        ]
+
+    # List format: [(logprob, token_id, text), ...] per position
     top_logprobs = meta_info.get("output_top_logprobs")
     if not top_logprobs:
         return None
-    token_ids, logprob_sums = [], []
-    for pos_entries in top_logprobs:
-        sorted_entries = sorted(pos_entries, key=lambda x: x[0], reverse=True)[:top_k]
-        token_ids.append([tid for _, tid, *_ in sorted_entries])
-        lps = np.array([lp for lp, *_ in sorted_entries], dtype=np.float32)
-        logprob_sums.append(_logsumexp(lps))
-    return token_ids, logprob_sums
+    return [
+        [(tid, lp) for lp, tid, *_ in sorted(entries, key=lambda x: x[0], reverse=True)[:top_k]]
+        for entries in top_logprobs
+    ]
 
 
 def append_sampling_mask_to_sample(
@@ -104,15 +117,30 @@ def append_sampling_mask_to_sample(
     if not use_topp and not use_topk:
         return
 
-    if use_topp:
-        result = _extract_top_p_candidates(meta_info)
-    else:
-        result = _extract_topk_candidates(meta_info, args.rollout_top_k)
+    topp_candidates = _extract_top_p_candidates(meta_info) if use_topp else None
+    topk_candidates = _extract_topk_candidates(meta_info, args.rollout_top_k) if use_topk else None
 
-    if result is None:
+    if topp_candidates is not None and topk_candidates is not None:
+        # Both enabled — take intersection per position
+        candidates: list[list[tuple[int, float]]] = []
+        for topp_pos, topk_pos in zip(topp_candidates, topk_candidates):
+            topk_set = {tid for tid, _ in topk_pos}
+            candidates.append([(tid, lp) for tid, lp in topp_pos if tid in topk_set])
+    elif topp_candidates is not None:
+        candidates = topp_candidates
+    elif topk_candidates is not None:
+        candidates = topk_candidates
+    else:
         return
 
-    new_token_ids, new_logprob_sums = result
+    # Build token_ids and logsumexp per position
+    new_token_ids: list[list[int]] = []
+    new_logprob_sums: list[float] = []
+    for pos in candidates:
+        ids = [tid for tid, _ in pos]
+        lps = np.array([lp for _, lp in pos], dtype=np.float32)
+        new_token_ids.append(ids)
+        new_logprob_sums.append(_logsumexp(lps))
 
     # Ensure the actually-sampled token is in each position's candidate set.
     # It may be missing when the model is very uncertain; without it the
