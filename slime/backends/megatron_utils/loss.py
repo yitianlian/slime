@@ -796,16 +796,17 @@ def policy_loss_function(
 
     log_probs = log_probs_and_entropy["log_probs"]
 
-    log_probs, old_log_probs = apply_sampling_mask_to_log_probs(
-        args,
-        batch,
-        logits,
-        log_probs,
-        old_log_probs,
-        total_lengths=total_lengths,
-        response_lengths=response_lengths,
-        max_seq_lens=max_seq_lens,
-    )
+    if getattr(args, "use_topp_mask", False) or getattr(args, "use_topk_mask", False):
+        log_probs, old_log_probs = apply_sampling_mask_to_log_probs(
+            args,
+            batch,
+            logits,
+            log_probs,
+            old_log_probs,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
 
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
     need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"
