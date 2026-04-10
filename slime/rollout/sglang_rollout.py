@@ -2,7 +2,6 @@ import asyncio
 import copy
 import inspect
 import logging
-import math
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
@@ -141,20 +140,6 @@ def append_sampling_mask_to_sample(
         lps = np.array([lp for _, lp in pos], dtype=np.float32)
         new_token_ids.append(ids)
         new_logprob_sums.append(_logsumexp(lps))
-
-    # Ensure the actually-sampled token is in each position's candidate set.
-    # It may be missing when the model is very uncertain; without it the
-    # old-policy and new-policy normalisation domains would diverge.
-    output_token_logprobs = meta_info.get("output_token_logprobs")
-    if output_token_logprobs is not None:
-        for t, (token_logprob, token_id, *_) in enumerate(output_token_logprobs):
-            if t < len(new_token_ids) and token_id not in new_token_ids[t]:
-                new_token_ids[t].append(token_id)
-                old_lse = new_logprob_sums[t]
-                max_val = max(old_lse, token_logprob)
-                new_logprob_sums[t] = max_val + math.log(
-                    math.exp(old_lse - max_val) + math.exp(token_logprob - max_val)
-                )
 
     if sample.sampling_token_ids is None:
         sample.sampling_token_ids = []
