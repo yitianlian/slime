@@ -62,10 +62,15 @@ def _extract_top_p_candidates(meta_info: dict[str, Any]) -> list[list[tuple[int,
             if length <= 0:
                 result.append([])
             else:
-                result.append(list(zip(
-                    flat_idxs[offset : offset + length].tolist(),
-                    flat_vals[offset : offset + length].tolist(),
-                )))
+                result.append(
+                    list(
+                        zip(
+                            flat_idxs[offset : offset + length].tolist(),
+                            flat_vals[offset : offset + length].tolist(),
+                            strict=True,
+                        )
+                    )
+                )
                 offset += length
         return result
 
@@ -90,10 +95,7 @@ def _extract_topk_candidates(meta_info: dict[str, Any], top_k: int) -> list[list
         vals = np.frombuffer(pybase64.b64decode(val_b64), dtype=np.float32).reshape(shape)
         idxs = np.frombuffer(pybase64.b64decode(idx_b64), dtype=np.int32).reshape(shape)
         k = min(top_k, shape[1])
-        return [
-            list(zip(idxs[i, :k].tolist(), vals[i, :k].tolist()))
-            for i in range(shape[0])
-        ]
+        return [list(zip(idxs[i, :k].tolist(), vals[i, :k].tolist(), strict=True)) for i in range(shape[0])]
 
     # List format: [(logprob, token_id, text), ...] per position
     top_logprobs = meta_info.get("output_top_logprobs")
@@ -122,7 +124,7 @@ def append_sampling_mask_to_sample(
     if topp_candidates is not None and topk_candidates is not None:
         # Both enabled — take intersection per position
         candidates: list[list[tuple[int, float]]] = []
-        for topp_pos, topk_pos in zip(topp_candidates, topk_candidates):
+        for topp_pos, topk_pos in zip(topp_candidates, topk_candidates, strict=True):
             topk_set = {tid for tid, _ in topk_pos}
             candidates.append([(tid, lp) for tid, lp in topp_pos if tid in topk_set])
     elif topp_candidates is not None:
