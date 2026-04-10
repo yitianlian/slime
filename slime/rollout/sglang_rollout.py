@@ -264,7 +264,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_topp_mask", False) or getattr(args, "use_topk_mask", False):
         payload["return_logprobs_in_base64"] = True
         if getattr(args, "use_topk_mask", False):
-            payload["top_logprobs_num"] = max(args.rollout_top_logprobs_num, args.rollout_top_k)
+            payload["top_logprobs_num"] = args.rollout_top_k
         if getattr(args, "use_topp_mask", False):
             payload["top_logprobs_p"] = args.rollout_top_p
 
