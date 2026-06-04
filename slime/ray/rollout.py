@@ -14,6 +14,7 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
+from slime.backends.sglang_utils.external import start_external_rollout_servers
 from slime.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from slime.backends.sglang_utils.sglang_engine import SGLangEngine
 from slime.rollout.base_types import call_rollout_fn
@@ -158,22 +159,17 @@ class ServerGroup:
         if self.num_new_engines == 0:
             return [], port_cursors
 
-        if self.args.rollout_external:
-            addr_and_ports = _allocate_rollout_engine_addr_and_ports_external(
-                args=self.args, rollout_engines=rollout_engines
-            )
-        else:
-            # Compute base_port from the maximum cursor across all nodes that
-            # this group's engines may land on (conservative: just use global max).
-            base_port = max(port_cursors.values()) if port_cursors else 15000
-            addr_and_ports, port_cursors = _allocate_rollout_engine_addr_and_ports_normal(
-                args=self.args,
-                rollout_engines=rollout_engines,
-                worker_type=self.worker_type,
-                num_gpus_per_engine=self.num_gpus_per_engine,
-                rank_offset=self.rank_offset,
-                base_port=base_port,
-            )
+        # Compute base_port from the maximum cursor across all nodes that
+        # this group's engines may land on (conservative: just use global max).
+        base_port = max(port_cursors.values()) if port_cursors else 15000
+        addr_and_ports, port_cursors = _allocate_rollout_engine_addr_and_ports_normal(
+            args=self.args,
+            rollout_engines=rollout_engines,
+            worker_type=self.worker_type,
+            num_gpus_per_engine=self.num_gpus_per_engine,
+            rank_offset=self.rank_offset,
+            base_port=base_port,
+        )
 
         init_handles = [
             engine.init.remote(
@@ -384,7 +380,7 @@ class RolloutManager:
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
         if self.args.debug_train_only:
-            self.servers: dict[str, RolloutServer] = {}
+            self.servers: dict[str, Any] = {}
         else:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
@@ -427,7 +423,12 @@ class RolloutManager:
         # Only inject fault once
         self._ci_fault_injection_pending = False
 
-        if self.server and self.server.server_groups[0].all_engines and self.server.server_groups[0].all_engines[0]:
+        if (
+            self.server
+            and self.server.server_groups
+            and self.server.server_groups[0].all_engines
+            and self.server.server_groups[0].all_engines[0]
+        ):
             logger.info("CI Fault Injection: Simulating crash on engine 0 during generate")
             try:
                 # This will cause the ray actor to exit
@@ -446,13 +447,13 @@ class RolloutManager:
         logging_utils.finish_tracking(self.args)
 
     @property
-    def server(self) -> RolloutServer | None:
+    def server(self) -> Any | None:
         """Default server (first model).  For backward compatibility."""
         if not self.servers:
             return None
         return next(iter(self.servers.values()))
 
-    def _get_updatable_server(self) -> RolloutServer | None:
+    def _get_updatable_server(self) -> Any | None:
         """Return the server with ``update_weights=True``.
 
         When multiple updatable servers exist, returns the first one
@@ -845,20 +846,6 @@ def _validate_rollout_id_annotated(node, depth=0):
         _validate_rollout_id_annotated(item, depth + 1)
 
 
-def _allocate_rollout_engine_addr_and_ports_external(args, rollout_engines):
-    addr_and_ports = {}
-    for rank, _ in rollout_engines:
-        addr = args.rollout_external_engine_addrs[rank]
-        [host, port] = addr.split(":")
-        addr_and_ports[rank] = dict(
-            dist_init_addr=addr,
-            nccl_port=None,
-            host=host,
-            port=int(port),
-        )
-    return addr_and_ports
-
-
 def _allocate_rollout_engine_addr_and_ports_normal(
     *,
     args,
@@ -1018,7 +1005,7 @@ def _compute_megatron_num_gpus(args) -> int:
     return num
 
 
-def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
+def start_rollout_servers(args, pg) -> dict[str, Any]:
     """Start rollout servers: one per model, each with its own router.
 
     Each model defined in the sglang config gets its own router and set
@@ -1031,6 +1018,9 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
     Note: ``init_http_client`` should be called separately before this,
     as the HTTP client is shared across all servers.
     """
+    if args.rollout_external:
+        return start_external_rollout_servers(args, start_router=_start_router)
+
     config = _resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
