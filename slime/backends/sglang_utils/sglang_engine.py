@@ -585,8 +585,8 @@ def _compute_server_args(
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
         "enable_draft_weights_cpu_backup": True,
-        # Always enable Prometheus metrics so the /engine_metrics endpoint is
-        # available for W&B scraping (regardless of --sglang-enable-metrics).
+        # Always enable Prometheus metrics so the router /engine_metrics endpoint
+        # is available for external scraping.
         "enable_metrics": True,
     }
 
