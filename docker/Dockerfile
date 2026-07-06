@@ -108,14 +108,14 @@ COPY docker/patch/${PATCH_VERSION}/sglang.patch \
      /sgl-workspace/sglang/
 RUN if [ "$ENABLE_SGLANG_PATCH" = "1" ]; then \
   cd /sgl-workspace/sglang && \
+  git update-index --refresh && \
   for patch in sglang.patch sglang-top_p.patch sglang-release_hicache.patch; do \
-    git update-index --refresh && \
     if [ "$patch" = "sglang.patch" ]; then \
       git apply --3way "$patch"; \
     else \
       git apply "$patch"; \
     fi && \
-    if grep -R -n '^<<<<<<< ' .; then \
+    if git grep -n '^<<<<<<< ' -- .; then \
       echo "Patch failed to apply cleanly. Please resolve conflicts." && \
       exit 1; \
     fi; \
