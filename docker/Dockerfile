@@ -110,11 +110,7 @@ RUN if [ "$ENABLE_SGLANG_PATCH" = "1" ]; then \
   cd /sgl-workspace/sglang && \
   git update-index --refresh && \
   for patch in sglang.patch sglang-top_p.patch sglang-release_hicache.patch; do \
-    if [ "$patch" = "sglang.patch" ]; then \
-      git apply --3way "$patch"; \
-    else \
-      git apply "$patch"; \
-    fi && \
+    git apply --3way "$patch" || exit 1; \
     if git grep -n '^<<<<<<< ' -- .; then \
       echo "Patch failed to apply cleanly. Please resolve conflicts." && \
       exit 1; \
